@@ -1,63 +1,71 @@
-import { timingSafeEqual } from 'node:crypto';
-import { createServer } from 'node:http';
+import { ArticleExtractor } from './adapters/article-extractor.js';
+import { HackerNewsClient } from './adapters/hacker-news.js';
+import { OpenRouterSummarizer } from './adapters/openrouter-summarizer.js';
+import { TelegraphClient } from './adapters/telegraph.js';
+import { TelegramClient } from './adapters/telegram.js';
+import { createAdminServer } from './admin-server.js';
+import { DigestService, type DigestDependencies } from './application/digest-service.js';
+import { DigestScheduler } from './application/scheduler.js';
 import { readConfig } from './config.js';
-import { errorCode, log } from './http.js';
-import { renderMessage, renderPage } from './render.js';
-import { Store } from './store.js';
-import { dependencies, Worker } from './worker.js';
+import { FetchJsonHttpClient } from './http-client.js';
+import { jsonLogger } from './logger.js';
+import { SqlitePublicationRepository } from './storage/sqlite-publication-repository.js';
 
 const config = readConfig();
-const store = new Store(config.DATA_DIR);
-const worker = new Worker(config, store, dependencies(config));
-const startedAt = new Date().toISOString();
+const repository = new SqlitePublicationRepository(config.DATA_DIR);
+const http = new FetchJsonHttpClient();
+const hackerNews = new HackerNewsClient(http);
+const articleExtractor = new ArticleExtractor(jsonLogger);
+const summarizer = new OpenRouterSummarizer(config, http, jsonLogger);
+const telegraph = new TelegraphClient(config, http);
+const telegram = new TelegramClient(config);
+
+const dependencies: DigestDependencies = {
+  getTopStories: () => hackerNews.getTopStories(),
+  getItem: (id) => hackerNews.getItem(id),
+  extractArticle: (story) => articleExtractor.extract(story),
+  collectComments: (story) => hackerNews.collectComments(story),
+  summarize: (story, article, comments) => summarizer.summarize(story, article, comments),
+  savePage: (draft, existing) => telegraph.save(draft, existing),
+  sendMessage: (draft, page) => telegram.send(draft, page),
+  editMessage: (draft, page, messageId) => telegram.edit(draft, page, messageId),
+};
+
+const service = new DigestService(config, repository, dependencies, jsonLogger);
+const scheduler = new DigestScheduler(service, config.POLL_INTERVAL_SECONDS * 1_000, jsonLogger);
 let stopping = false;
-const server = createServer(async (request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  const path = url.pathname;
-  const json = (status: number, value: unknown) => { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(value)); };
-  if (path === '/healthz') return json(stopping ? 503 : 200, { status: stopping ? 'stopping' : 'ok' });
-  const authorization = Buffer.from(request.headers.authorization ?? '');
-  const expected = Buffer.from(`Bearer ${config.ADMIN_TOKEN}`);
-  if (authorization.length !== expected.length || !timingSafeEqual(authorization, expected)) return json(401, { error: 'Unauthorized' });
-  try {
-    if (path === '/admin/status' && request.method === 'GET') return json(200, {
-      startedAt, autoPublish: worker.enabled(), busy: worker.busy,
-      lastCycle: worker.lastCycle ?? JSON.parse(store.setting('last_cycle') ?? 'null'),
-      publications: store.all().map(p => ({ id: p.id, state: p.state, title: p.draft.summary.title, page: p.page, messageId: p.messageId, commentsSampled: p.draft.comments.length, commentCount: p.draft.commentCount, updates: p.updates })), failures: store.failures(),
-    });
-    if (request.method !== 'POST') return json(404, { error: 'Not found' });
-    if (path === '/admin/enable') { store.setSetting('auto_publish', 'true'); return json(200, { autoPublish: true }); }
-    if (path === '/admin/pause') { store.setSetting('auto_publish', 'false'); return json(200, { autoPublish: false }); }
-    if (path === '/admin/run') {
-      if (worker.busy) return json(409, { error: 'Worker already running' });
-      void worker.cycle().catch(error => log('cycle_failed', { code: errorCode(error) }));
-      return json(202, { accepted: true });
-    }
-    const match = path.match(/^\/admin\/(preview|publish)\/(\d+)$/);
-    if (match) {
-      if (worker.busy) return json(409, { error: 'Worker already running' });
-      const id = Number(match[2]);
-      if (!Number.isSafeInteger(id) || id <= 0) return json(400, { error: 'Invalid story ID' });
-      if (match[1] === 'preview') {
-        const draft = await worker.preview(id, url.searchParams.get('regenerate') === 'true');
-        return json(200, { draft, content: renderPage(draft), message: renderMessage(draft, 'https://telegra.ph/preview') });
-      }
-      const publication = await worker.publish(id);
-      return json(200, { id, state: publication.state, page: publication.page, messageId: publication.messageId });
-    }
-    return json(404, { error: 'Not found' });
-  } catch (error) { log('admin_failed', { code: errorCode(error) }); return json(500, { error: errorCode(error) }); }
+const server = createAdminServer({
+  adminToken: config.ADMIN_TOKEN,
+  service,
+  logger: jsonLogger,
+  stopping: () => stopping,
 });
 server.requestTimeout = 180_000;
-server.listen(config.PORT, '0.0.0.0', () => log('server_started', { port: config.PORT, autoPublish: worker.enabled() }));
-const poll = async () => {
-  if (stopping || worker.busy || !worker.enabled()) return;
-  try { await worker.cycle(); } catch (error) { log('cycle_failed', { code: errorCode(error) }); }
-};
-const timer = setInterval(() => void poll(), config.POLL_INTERVAL_SECONDS * 1000);
-void poll();
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
-  if (stopping) return;
-  stopping = true; clearInterval(timer); server.close();
-  const drain = setInterval(() => { if (!worker.busy) { clearInterval(drain); store.close(); process.exit(0); } }, 250);
+server.listen(config.PORT, '0.0.0.0', () => {
+  jsonLogger.info('server_started', {
+    port: config.PORT,
+    autoPublish: service.automaticPublishingEnabled(),
+  });
+  scheduler.start();
 });
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => void shutdown(signal));
+}
+
+async function shutdown(signal: string): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  scheduler.stop();
+  jsonLogger.info('shutdown_started', { signal });
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  const deadline = Date.now() + 170_000;
+  while (service.isRunning && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  const drained = !service.isRunning;
+  if (drained) repository.close();
+  jsonLogger.info('shutdown_finished', { drained });
+}

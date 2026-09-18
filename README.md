@@ -8,8 +8,7 @@ Requires Node.js 24 or later. Copy `.env.example` to `.env.local`, populate cred
 
 ```sh
 npm ci
-npm test
-npm run build
+npm run verify
 node --env-file=.env.local dist/server.js
 ```
 
@@ -58,7 +57,19 @@ If Telegraph page creation succeeds but the response is lost, a later attempt ca
 
 ## Verification
 
-The tests cover database reopening, definite send rejection, ambiguous send outcomes, interrupted delivery, same-page discussion refresh, deleted comments, source references, HTML escaping, private-address blocking, and non-publishing previews. Live acceptance must additionally verify OpenRouter, Telegraph, the target Telegram channel, and persistence after a Railway restart.
+`npm run verify` checks formatting, lint, application and test types, all tests, and a clean production build. `npm run test:coverage` prints built-in Node.js line, branch, and function coverage.
+
+The test suite covers the actual HTTP and SQLite boundaries as well as database reopening, process leases, definite send rejection, ambiguous send outcomes, interrupted delivery, same-page discussion refresh, deleted comments, source references, HTML escaping, private-address blocking, legacy summary compatibility, and non-publishing previews. Live acceptance must additionally verify OpenRouter, Telegraph, the target Telegram channel, and persistence after a Railway restart.
+
+## Architecture
+
+- `src/domain.ts` owns validated story, summary, draft, and delivery contracts, including the legacy persisted summary shape.
+- `src/application/` owns publication state transitions and scheduling without importing vendor SDKs.
+- `src/adapters/` contains the Hacker News, article extraction, OpenRouter, Telegraph, and Telegram boundaries.
+- `src/storage/` owns the backwards-compatible SQLite repository and validates every JSON record on read and write.
+- `src/admin-server.ts` is the authenticated operations boundary; `src/server.ts` only composes and starts the service.
+
+Dependencies enter the application service through explicit interfaces. Tests replace those external collaborators at construction time while exercising the real domain and persistence paths.
 
 ## Reuse
 

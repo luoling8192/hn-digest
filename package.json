@@ -3,13 +3,21 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "dev": "node --env-file=.env.local --import tsx src/server.ts",
     "test": "node --import tsx --test test/*.test.ts",
-    "check": "tsc --noEmit"
+    "test:coverage": "node --import tsx --test --experimental-test-coverage test/*.test.ts",
+    "check": "tsc -p tsconfig.json",
+    "lint": "biome lint src test",
+    "format": "biome format --write src test package.json tsconfig.json tsconfig.build.json biome.json",
+    "format:check": "biome format src test package.json tsconfig.json tsconfig.build.json biome.json",
+    "verify": "npm run format:check && npm run lint && npm run check && npm test && npm run build"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
@@ -19,6 +27,7 @@
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.14",
     "@types/jsdom": "^21.1.7",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
