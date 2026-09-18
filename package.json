@@ -1,0 +1,27 @@
+{
+  "name": "hn-digest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "node --env-file=.env.local --import tsx src/server.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "ipaddr.js": "^2.2.0",
+    "jsdom": "^26.1.0",
+    "undici": "^7.16.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
