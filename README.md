@@ -26,6 +26,8 @@ All secrets belong in ignored local configuration or Railway Variables. Never pu
 
 ## Railway
 
+The production service is connected to the private GitHub repository `luoling8192/hn-digest`, branch `main`. Pushing to `main` triggers Railway deployment using the root Dockerfile. Production secrets remain in Railway Variables; the `/data` volume is retained across deployments.
+
 Deploy the Dockerfile as one persistent service with **one replica** and a volume mounted at `/data`. Set all required variables from `.env.example`. Set the health check path to `/healthz`, use port 3000, and keep `AUTO_PUBLISH=false` until the initial publication is checked. No cron service is necessary; the application owns its scheduler.
 
 The SQLite volume retains drafts, Telegraph paths, Telegram message IDs, retry state, scheduler settings, and a process lease. The deployment archive excludes local secrets, data, and artifacts. Back up the volume through Railway before any destructive maintenance. This repository does not configure a backup schedule.
