@@ -8,8 +8,14 @@ import type {
   HackerNewsItem,
   Page,
   Publication,
+  TagFrequency,
 } from '../domain.js';
-import { cycleResultSchema, readyPublication } from '../domain.js';
+import {
+  cycleResultSchema,
+  isReusableTag,
+  isScanCardSummary,
+  readyPublication,
+} from '../domain.js';
 import {
   ConcurrentRunError,
   DeliveryRejectedError,
@@ -33,7 +39,12 @@ export interface DigestDependencies {
   getItem(id: number): Promise<HackerNewsItem | null>;
   extractArticle(story: HackerNewsItem): Promise<Article>;
   collectComments(story: HackerNewsItem): Promise<Comment[]>;
-  summarize(story: HackerNewsItem, article: Article, comments: Comment[]): Promise<Draft>;
+  summarize(
+    story: HackerNewsItem,
+    article: Article,
+    comments: Comment[],
+    tagCatalog: readonly TagFrequency[],
+  ): Promise<Draft>;
   savePage(draft: Draft, existing: Page | null): Promise<Page>;
   sendMessage(draft: Draft, page: Page): Promise<number>;
   editMessage(draft: Draft, page: Page, messageId: number): Promise<void>;
@@ -237,7 +248,7 @@ export class DigestService {
       this.dependencies.collectComments(story),
     ]);
     if (article.source === 'unavailable' && comments.length === 0) throw new UnreadableStoryError();
-    return this.dependencies.summarize(story, article, comments);
+    return this.dependencies.summarize(story, article, comments, this.tagCatalog());
   }
 
   private async deliver(publication: Publication): Promise<Publication> {
@@ -305,7 +316,12 @@ export class DigestService {
     if (shouldRegenerateDiscussion) {
       const comments = await this.dependencies.collectComments(story);
       if (hashComments(comments) !== publication.draft.commentHash) {
-        const draft = await this.dependencies.summarize(story, publication.draft.article, comments);
+        const draft = await this.dependencies.summarize(
+          story,
+          publication.draft.article,
+          comments,
+          this.tagCatalog(),
+        );
         const page = await this.dependencies.savePage(draft, publication.page);
         current = {
           ...current,
@@ -329,5 +345,22 @@ export class DigestService {
 
     this.repository.savePublication(current);
     this.repository.clearFailure(current.id);
+  }
+
+  private tagCatalog(): TagFrequency[] {
+    const frequencies = new Map<string, number>();
+    for (const publication of this.repository.listPublications()) {
+      const summary = publication.draft.summary;
+      if (!isScanCardSummary(summary)) continue;
+      for (const tag of new Set(summary.tags)) {
+        if (!isReusableTag(tag)) continue;
+        frequencies.set(tag, (frequencies.get(tag) ?? 0) + 1);
+      }
+    }
+
+    return [...frequencies]
+      .map(([tag, uses]) => ({ tag, uses }))
+      .sort((left, right) => right.uses - left.uses || left.tag.localeCompare(right.tag, 'zh-CN'))
+      .slice(0, 100);
   }
 }

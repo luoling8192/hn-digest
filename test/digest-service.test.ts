@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import { test } from 'node:test';
 import { hashComments } from '../src/adapters/hacker-news.js';
 import { DigestService } from '../src/application/digest-service.js';
+import type { Draft, TagFrequency } from '../src/domain.js';
 import { readyPublication } from '../src/domain.js';
 import {
   ConcurrentRunError,
@@ -11,7 +12,7 @@ import {
 } from '../src/errors.js';
 import { silentLogger } from '../src/logger.js';
 import { SqlitePublicationRepository } from '../src/storage/sqlite-publication-repository.js';
-import { config, createHarness, draft, story } from './fixtures.js';
+import { config, createHarness, draft, story, summary } from './fixtures.js';
 
 test('published stories remain deduplicated after the database is reopened', async () => {
   const harness = createHarness();
@@ -165,6 +166,42 @@ test('previews persist drafts without creating public pages or messages', async 
     assert.equal(pageCalls, 0);
     assert.equal(harness.sends(), 0);
     assert.equal(harness.repository.getPublication(story.id)?.state, 'ready');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('summary generation receives reusable historical tags ordered by frequency', async () => {
+  let receivedCatalog: readonly TagFrequency[] = [];
+  const harness = createHarness({
+    summarize: async (_story, _article, _comments, tagCatalog) => {
+      receivedCatalog = tagCatalog;
+      return structuredClone(draft);
+    },
+  });
+  const historicalDrafts: Draft[] = [
+    { ...draft, story: { ...story, id: 1 }, summary: { ...summary, tags: ['AI'] } },
+    {
+      ...draft,
+      story: { ...story, id: 2 },
+      summary: { ...summary, tags: ['AI', '开发工具'] },
+    },
+    {
+      ...draft,
+      story: { ...story, id: 3 },
+      summary: { ...summary, tags: ['其他'], readIf: '旧字段', skipIf: '旧字段' },
+    },
+  ];
+
+  try {
+    for (const historicalDraft of historicalDrafts) {
+      harness.repository.savePublication(readyPublication(historicalDraft, harness.runtime.now()));
+    }
+    await harness.service.preview(story.id);
+    assert.deepEqual(receivedCatalog, [
+      { tag: 'AI', uses: 2 },
+      { tag: '开发工具', uses: 1 },
+    ]);
   } finally {
     harness.cleanup();
   }

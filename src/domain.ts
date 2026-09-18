@@ -47,34 +47,38 @@ export const legacySummarySchema = z.object({
   discussion: z.array(discussionSectionSchema).max(6),
 });
 
-export const topicSchema = z.enum([
-  'AI',
-  '开发工具',
-  '编程语言',
-  '开源',
-  '安全',
-  '隐私',
-  '数据库',
-  'Web',
-  '云计算',
-  '基础设施',
-  '系统',
-  '硬件',
-  '科学',
-  '创业',
-  '产品',
-  '其他',
-]);
-
-export const summarySchema = legacySummarySchema.extend({
-  tags: z.array(topicSchema).min(2).max(4),
+const genericTags = new Set(['其他', '其它', '杂项', '综合', 'other', 'misc']);
+const scanCardFields = {
   quickTake: z.string().min(1).max(180),
   whyItMatters: z.array(z.string().min(1).max(120)).min(2).max(3),
-  readIf: z.string().min(1).max(120),
-  skipIf: z.string().min(1).max(120),
+};
+
+export const tagSchema = z
+  .string()
+  .min(1)
+  .max(20)
+  .regex(/^[A-Za-z0-9_\u3400-\u9FFF]+$/)
+  .refine((tag) => !genericTags.has(tag.toLowerCase()), 'generic fallback tags are not allowed');
+
+const persistedTagSchema = z.string().min(1).max(24);
+
+export const summarySchema = legacySummarySchema.extend({
+  tags: z.array(tagSchema).min(1).max(2),
+  ...scanCardFields,
 });
 
-export const persistedSummarySchema = z.union([summarySchema, legacySummarySchema]);
+const persistedScanCardSummarySchema = legacySummarySchema.extend({
+  tags: z.array(persistedTagSchema).min(1).max(4),
+  ...scanCardFields,
+  readIf: z.string().optional(),
+  skipIf: z.string().optional(),
+});
+
+export const persistedSummarySchema = z.union([
+  summarySchema,
+  persistedScanCardSummarySchema,
+  legacySummarySchema,
+]);
 
 export const draftSchema = z.object({
   story: hackerNewsItemSchema,
@@ -131,6 +135,10 @@ export type DeliveryState = z.infer<typeof deliveryStateSchema>;
 export type Publication = z.infer<typeof publicationSchema>;
 export type CycleResult = z.infer<typeof cycleResultSchema>;
 export type FailureRecord = z.infer<typeof failureRecordSchema>;
+export interface TagFrequency {
+  tag: string;
+  uses: number;
+}
 
 export type TelegraphNode =
   | string
@@ -141,7 +149,11 @@ export type TelegraphNode =
     };
 
 export function isScanCardSummary(summary: PersistedSummary): summary is Summary {
-  return summarySchema.safeParse(summary).success;
+  return persistedScanCardSummarySchema.safeParse(summary).success;
+}
+
+export function isReusableTag(tag: string): boolean {
+  return tagSchema.safeParse(tag).success;
 }
 
 export function readyPublication(draft: Draft, now: number): Publication {

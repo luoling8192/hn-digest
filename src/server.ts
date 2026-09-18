@@ -25,7 +25,8 @@ const dependencies: DigestDependencies = {
   getItem: (id) => hackerNews.getItem(id),
   extractArticle: (story) => articleExtractor.extract(story),
   collectComments: (story) => hackerNews.collectComments(story),
-  summarize: (story, article, comments) => summarizer.summarize(story, article, comments),
+  summarize: (story, article, comments, tagCatalog) =>
+    summarizer.summarize(story, article, comments, tagCatalog),
   savePage: (draft, existing) => telegraph.save(draft, existing),
   sendMessage: (draft, page) => telegram.send(draft, page),
   editMessage: (draft, page, messageId) => telegram.edit(draft, page, messageId),

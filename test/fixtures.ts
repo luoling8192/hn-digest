@@ -32,8 +32,6 @@ export const summary: Summary = {
   tags: ['AI', '编程语言'],
   quickTake: '一句话 <结论>',
   whyItMatters: ['解决具体问题', '展示新的方向'],
-  readIf: '关注 AI 编程',
-  skipIf: '只需要成熟工具',
   introduction: '摘要导语',
   article: [{ heading: '背景', paragraphs: ['主要内容'] }],
   discussion: [{ heading: '不同看法', text: '用户补充', commentIds: [124] }],

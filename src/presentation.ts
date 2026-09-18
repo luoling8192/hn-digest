@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Draft, TelegraphNode } from './domain.js';
-import { isScanCardSummary } from './domain.js';
+import { isReusableTag, isScanCardSummary } from './domain.js';
 import { hackerNewsUrl } from './adapters/hacker-news.js';
 
 export interface TelegramMessagePayload {
@@ -118,8 +118,16 @@ export function renderTelegramMessage(draft: Draft, pageUrl: string): TelegramMe
     draft.article.readingMinutes === null ? '暂不可估算' : `${draft.article.readingMinutes} 分钟`;
   const title = `<a href="${escapeHtml(pageUrl)}">${escapeHtml(draft.summary.title)}</a>`;
   const details = `原文：${escapeHtml(originalUrl(draft))}\n阅读时间：${readingTime}\n分数：${score}${score >= 400 ? ' 🔥' : ''}`;
+  const tagLine = isScanCardSummary(draft.summary)
+    ? draft.summary.tags
+        .filter(isReusableTag)
+        .slice(0, 2)
+        .map((tag) => `#${tag}`)
+        .join(' ')
+    : '';
+  const tagHeader = tagLine ? `${tagLine}\n\n` : '';
   const text = isScanCardSummary(draft.summary)
-    ? `${draft.summary.tags.map((tag) => `#${tag}`).join(' ')}\n\n${title}\n\n⚡ <b>15 秒版</b>\n${escapeHtml(draft.summary.quickTake)}\n\n🎯 <b>为什么值得看</b>\n${draft.summary.whyItMatters.map((reason) => `• ${escapeHtml(reason)}`).join('\n')}\n\n✅ <b>适合你，如果</b>：${escapeHtml(draft.summary.readIf)}\n⏭ <b>可以跳过，如果</b>：${escapeHtml(draft.summary.skipIf)}\n\n${details}`
+    ? `${tagHeader}${title}\n\n⚡ <b>15 秒版</b>\n${escapeHtml(draft.summary.quickTake)}\n\n🎯 <b>看点</b>\n${draft.summary.whyItMatters.map((reason) => `• ${escapeHtml(reason)}`).join('\n')}\n\n${details}`
     : `${title}\n${details}`;
 
   if (text.length > 4_096) throw new Error('Telegram message exceeds 4096 characters');
