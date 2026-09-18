@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { hnUrl } from './hn.js';
-import type { Draft, TelegraphNode } from './types.js';
+import type { Draft, Summary, TelegraphNode } from './types.js';
 
 function inlineNodes(text: string): TelegraphNode[] {
   return text.split(/(`[^`\n]+`)/g).filter(Boolean).map(part => part.startsWith('`') && part.endsWith('`')
@@ -20,6 +20,7 @@ export function renderPage(draft: Draft): TelegraphNode[] {
   const { story, summary } = draft;
   const nodes: TelegraphNode[] = [
     { tag: 'p', children: ['原标题：', link(story.title ?? summary.title, originalUrl(draft))] },
+    heading('原文摘要'),
     paragraph(summary.introduction),
   ];
   if (draft.article.source === 'unavailable') nodes.push(paragraph('原文正文暂时无法获取，以下讨论摘要仅基于已读取的 HN 评论，不代表对原文内容的核实。'));
@@ -46,8 +47,14 @@ export function escapeHtml(text: string) {
 export function renderMessage(draft: Draft, pageUrl: string) {
   const score = draft.story.score ?? 0;
   const reading = draft.article.readingMinutes === null ? '暂不可估算' : `${draft.article.readingMinutes} 分钟`;
+  const summary = draft.summary;
+  const title = `<a href="${escapeHtml(pageUrl)}">${escapeHtml(summary.title)}</a>`;
+  const details = `原文：${escapeHtml(originalUrl(draft))}\n阅读时间：${reading}\n分数：${score}${score >= 400 ? ' 🔥' : ''}`;
+  const text = isCardSummary(summary)
+    ? `${summary.tags.map(tag => `#${tag}`).join(' ')}\n\n${title}\n\n⚡ <b>15 秒版</b>\n${escapeHtml(summary.quickTake)}\n\n🎯 <b>为什么值得看</b>\n${summary.whyItMatters.map(reason => `• ${escapeHtml(reason)}`).join('\n')}\n\n✅ <b>适合你，如果</b>：${escapeHtml(summary.readIf)}\n⏭ <b>可以跳过，如果</b>：${escapeHtml(summary.skipIf)}\n\n${details}`
+    : `${title}\n${details}`;
   return {
-    text: `<a href="${escapeHtml(pageUrl)}">${escapeHtml(draft.summary.title)}</a>\n原文：${escapeHtml(originalUrl(draft))}\n阅读时间：${reading}\n分数：${score}${score >= 400 ? ' 🔥' : ''}`,
+    text,
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: false, url: pageUrl, show_above_text: true },
     reply_markup: { inline_keyboard: [[
@@ -55,6 +62,9 @@ export function renderMessage(draft: Draft, pageUrl: string) {
       { text: `评论：${draft.story.descendants ?? 0}`, url: hnUrl(draft.story.id) },
     ]] },
   };
+}
+function isCardSummary(summary: Draft['summary']): summary is Summary {
+  return 'tags' in summary;
 }
 export function messageHash(draft: Draft, pageUrl: string): string {
   return createHash('sha256').update(JSON.stringify(renderMessage(draft, pageUrl))).digest('hex');

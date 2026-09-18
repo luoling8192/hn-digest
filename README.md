@@ -21,6 +21,7 @@ All secrets belong in ignored local configuration or Railway Variables. Never pu
 - Extracts HTML with Mozilla Readability. Documents that cannot be extracted (including unsupported PDFs and paywalls) are explicitly marked unavailable. HN text posts are supported. It never substitutes a guessed article summary.
 - Samples up to 160 live comments, retaining parent IDs, with a 48,000-character total budget and a 2,500-character per-comment cap. Sampling is breadth-first, not vote-ranked; HN does not expose comment scores.
 - Generates structured Simplified Chinese output through OpenRouter. Validates citations against the exact supplied comments and renders separate article and discussion sections. Telegraph content stays below its 64 KB limit.
+- Telegram messages start with two to four stable topic tags and a short scanning card: one-sentence takeaway, why it matters, and explicit read-or-skip guidance. The Telegraph page still contains the complete original article summary before the HN discussion summary.
 - Refreshes score/comment metadata for 48 hours after publication. When comments grow by 30 or more, regenerates summaries at most hourly and at most three times per story. It edits the original Telegraph page and Telegram message.
 - The reading estimate describes the source article (220 words or 400 Han characters per minute). A fire marker is shown at 400 points; this is an explicit product rule, not a claim about the reference channel's hidden implementation.
 

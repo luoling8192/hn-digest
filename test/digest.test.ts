@@ -9,11 +9,11 @@ import { TelegramRejected } from '../src/publish.js';
 import { renderMessage, renderPage } from '../src/render.js';
 import { Store } from '../src/store.js';
 import { Worker, type Dependencies } from '../src/worker.js';
-import type { Draft, Item } from '../src/types.js';
+import { summarySchema, type Draft, type Item } from '../src/types.js';
 
 const config = configSchema.parse({ TELEGRAM_BOT_TOKEN: 'test-token-not-a-real-token', TELEGRAM_CHAT_ID: '-100123456789', OPENROUTER_API_KEY: 'test-key-not-a-real-key', TELEGRAPH_ACCESS_TOKEN: 'test-telegraph', ADMIN_TOKEN: 'x'.repeat(32) });
 const story: Item = { id: 123, type: 'story', title: 'A & B < C', time: 100, score: 200, descendants: 10, url: 'https://example.com/article', kids: [124] };
-const draft: Draft = { story, article: { text: 'Article text', source: 'article', readingMinutes: 3 }, comments: [{ id: 124, parent: 123, author: 'alice', text: 'A useful correction' }], summary: { title: '中文 & <标题>', introduction: '摘要导语', article: [{ heading: '背景', paragraphs: ['主要内容'] }], discussion: [{ heading: '不同看法', text: '用户补充', commentIds: [124] }] }, generatedAt: '2026-09-18T00:00:00Z', commentCount: 10, commentHash: 'initial' };
+const draft: Draft = { story, article: { text: 'Article text', source: 'article', readingMinutes: 3 }, comments: [{ id: 124, parent: 123, author: 'alice', text: 'A useful correction' }], summary: { title: '中文 & <标题>', tags: ['AI', '编程语言'], quickTake: '一句话 <结论>', whyItMatters: ['解决具体问题', '展示新的方向'], readIf: '关注 AI 编程', skipIf: '只需要成熟工具', introduction: '摘要导语', article: [{ heading: '背景', paragraphs: ['主要内容'] }], discussion: [{ heading: '不同看法', text: '用户补充', commentIds: [124] }] }, generatedAt: '2026-09-18T00:00:00Z', commentCount: 10, commentHash: 'initial' };
 function setup(overrides: Partial<Dependencies> = {}) {
   const dir = mkdtempSync(join(process.cwd(), 'data-test-'));
   let sends = 0;
@@ -80,11 +80,28 @@ test('comment traversal skips removed text and retains reply relationships', asy
 });
 test('rendering keeps article and discussion separate with direct comment references', () => {
   const content = JSON.stringify(renderPage(draft));
-  assert.ok(content.includes('HN 讨论摘要')); assert.ok(content.includes('item?id=124'));
+  assert.ok(content.includes('原文摘要')); assert.ok(content.includes('HN 讨论摘要')); assert.ok(content.includes('item?id=124'));
   const message = renderMessage(draft, 'https://telegra.ph/test');
+  assert.ok(message.text.includes('#AI #编程语言'));
+  assert.ok(message.text.includes('⚡ <b>15 秒版</b>'));
+  assert.ok(message.text.includes('一句话 &lt;结论&gt;'));
   assert.ok(message.text.includes('&amp; &lt;标题&gt;'));
+  assert.ok(message.text.length < 4096);
   assert.equal(message.link_preview_options.url, 'https://telegra.ph/test');
   assert.equal(message.reply_markup.inline_keyboard[0]?.[1]?.text, '评论：10');
+});
+test('summary cards accept only the stable topic taxonomy', () => {
+  assert.equal(summarySchema.safeParse(draft.summary).success, true);
+  assert.equal(summarySchema.safeParse({ ...draft.summary, tags: ['随便写的标签', 'AI'] }).success, false);
+});
+test('rendering keeps legacy persisted summaries deliverable after the card schema upgrade', () => {
+  const legacy: Draft = { ...draft, summary: {
+    title: '旧摘要', introduction: '旧导语', article: [{ heading: '原文', paragraphs: ['完整摘要'] }], discussion: [],
+  } };
+  const message = renderMessage(legacy, 'https://telegra.ph/legacy');
+  assert.equal(message.text.includes('15 秒版'), false);
+  assert.ok(message.text.includes('旧摘要'));
+  assert.ok(JSON.stringify(renderPage(legacy)).includes('完整摘要'));
 });
 test('article fetch blocks loopback, metadata, private and mapped private addresses', () => {
   for (const address of ['127.0.0.1', '169.254.169.254', '10.1.2.3', '192.168.1.1', '::1', '::ffff:127.0.0.1', 'fc00::1']) assert.equal(publicAddress(address), false);
