@@ -104,8 +104,8 @@ test('interrupted sending records become uncertain before new work starts', asyn
   }
 });
 
-test('comment growth edits the existing page and Telegram message without republishing', async () => {
-  let currentStory = story;
+test('moderate comment growth refreshes discussion without republishing', async () => {
+  let currentStory = { ...story, descendants: 79 };
   let summaries = 0;
   let editedPage = '';
   let editedMessage = 0;
@@ -139,14 +139,76 @@ test('comment growth edits the existing page and Telegram message without republ
   try {
     await harness.service.publish(story.id);
     harness.runtime.advance(2 * 3_600_000);
-    currentStory = { ...story, descendants: 80, score: 250 };
+    currentStory = { ...story, descendants: 93, score: 250 };
 
     const result = await harness.service.runCycle();
     assert.equal(result.updated, 1);
     assert.equal(editedPage, 'same-page');
     assert.equal(editedMessage, 42);
     assert.equal(harness.sends(), 1);
-    assert.equal(harness.repository.getPublication(story.id)?.draft.commentCount, 80);
+    assert.equal(harness.repository.getPublication(story.id)?.draft.commentCount, 93);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('twenty percent comment growth refreshes smaller discussions', async () => {
+  let currentStory = { ...story, descendants: 20 };
+  let summaries = 0;
+  const harness = createHarness({
+    getTopStories: async () => [currentStory],
+    summarize: async (_story, article, comments) => {
+      summaries += 1;
+      return {
+        ...structuredClone(draft),
+        story: currentStory,
+        article,
+        comments,
+        commentCount: currentStory.descendants ?? 0,
+        commentHash: `${summaries}`,
+      };
+    },
+  });
+
+  try {
+    await harness.service.publish(story.id);
+    harness.runtime.advance(2 * 3_600_000);
+    currentStory = { ...story, descendants: 24 };
+
+    await harness.service.runCycle();
+    assert.equal(summaries, 2);
+    assert.equal(harness.repository.getPublication(story.id)?.draft.commentCount, 24);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('unsettled comments receive a final refresh after twelve hours', async () => {
+  let currentStory = story;
+  let summaries = 0;
+  const harness = createHarness({
+    getTopStories: async () => [currentStory],
+    summarize: async (_story, article, comments) => {
+      summaries += 1;
+      return {
+        ...structuredClone(draft),
+        story: currentStory,
+        article,
+        comments,
+        commentCount: currentStory.descendants ?? 0,
+        commentHash: `${summaries}`,
+      };
+    },
+  });
+
+  try {
+    await harness.service.publish(story.id);
+    harness.runtime.advance(13 * 3_600_000);
+    currentStory = { ...story, descendants: 11 };
+
+    await harness.service.runCycle();
+    assert.equal(summaries, 2);
+    assert.equal(harness.repository.getPublication(story.id)?.draft.commentCount, 11);
   } finally {
     harness.cleanup();
   }
@@ -171,7 +233,7 @@ test('previews persist drafts without creating public pages or messages', async 
   }
 });
 
-test('summary generation receives reusable historical tags ordered by frequency', async () => {
+test('summary generation receives searchable historical tags with representative titles', async () => {
   let receivedCatalog: readonly TagFrequency[] = [];
   const harness = createHarness({
     summarize: async (_story, _article, _comments, tagCatalog) => {
@@ -180,16 +242,26 @@ test('summary generation receives reusable historical tags ordered by frequency'
     },
   });
   const historicalDrafts: Draft[] = [
-    { ...draft, story: { ...story, id: 1 }, summary: { ...summary, tags: ['AI'] } },
+    {
+      ...draft,
+      story: { ...story, id: 1 },
+      summary: { ...summary, title: 'AI 编程助手', tags: ['AI'] },
+    },
     {
       ...draft,
       story: { ...story, id: 2 },
-      summary: { ...summary, tags: ['AI', '开发工具'] },
+      summary: { ...summary, title: '本地开发工具', tags: ['AI', '开发工具'] },
     },
     {
       ...draft,
       story: { ...story, id: 3 },
-      summary: { ...summary, tags: ['其他'], readIf: '旧字段', skipIf: '旧字段' },
+      summary: {
+        ...summary,
+        title: '宽泛分类',
+        tags: ['其他', '网络'],
+        readIf: '旧字段',
+        skipIf: '旧字段',
+      },
     },
   ];
 
@@ -199,8 +271,8 @@ test('summary generation receives reusable historical tags ordered by frequency'
     }
     await harness.service.preview(story.id);
     assert.deepEqual(receivedCatalog, [
-      { tag: 'AI', uses: 2 },
-      { tag: '开发工具', uses: 1 },
+      { tag: '开发工具', uses: 1, examples: ['本地开发工具'] },
+      { tag: 'AI', uses: 2, examples: ['本地开发工具', 'AI 编程助手'] },
     ]);
   } finally {
     harness.cleanup();

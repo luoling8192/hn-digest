@@ -33,6 +33,9 @@ const LEASE_DURATION_MS = 300_000;
 const LEASE_RENEWAL_MS = 30_000;
 const REFRESH_WINDOW_MS = 48 * 3_600_000;
 const DISCUSSION_REFRESH_INTERVAL_MS = 3_600_000;
+const DISCUSSION_SETTLE_INTERVAL_MS = 12 * 3_600_000;
+const DISCUSSION_GROWTH_RATIO = 0.2;
+const TAG_EXAMPLE_LIMIT = 2;
 
 export interface DigestDependencies {
   getTopStories(): Promise<HackerNewsItem[]>;
@@ -308,8 +311,16 @@ export class DigestService {
     };
     const now = this.runtime.now();
     const newCommentCount = (story.descendants ?? 0) - publication.draft.commentCount;
+    const relativeCommentGrowth =
+      publication.draft.commentCount === 0 ? 0 : newCommentCount / publication.draft.commentCount;
+    const hasMaterialGrowth =
+      newCommentCount >= this.config.COMMENT_UPDATE_THRESHOLD ||
+      (publication.draft.commentCount >= this.config.COMMENT_UPDATE_THRESHOLD &&
+        relativeCommentGrowth >= DISCUSSION_GROWTH_RATIO);
+    const hasUnsettledComments =
+      newCommentCount > 0 && now - publication.updatedAt >= DISCUSSION_SETTLE_INTERVAL_MS;
     const shouldRegenerateDiscussion =
-      newCommentCount >= this.config.COMMENT_UPDATE_THRESHOLD &&
+      (hasMaterialGrowth || hasUnsettledComments) &&
       now - publication.updatedAt >= DISCUSSION_REFRESH_INTERVAL_MS &&
       publication.updates < this.config.MAX_COMMENT_UPDATES;
 
@@ -348,19 +359,24 @@ export class DigestService {
   }
 
   private tagCatalog(): TagFrequency[] {
-    const frequencies = new Map<string, number>();
+    const catalog = new Map<string, TagFrequency>();
     for (const publication of this.repository.listPublications()) {
       const summary = publication.draft.summary;
       if (!isScanCardSummary(summary)) continue;
       for (const tag of new Set(summary.tags)) {
         if (!isReusableTag(tag)) continue;
-        frequencies.set(tag, (frequencies.get(tag) ?? 0) + 1);
+        const entry = catalog.get(tag) ?? { tag, uses: 0, examples: [] };
+        entry.uses += 1;
+        if (entry.examples.length < TAG_EXAMPLE_LIMIT && !entry.examples.includes(summary.title)) {
+          entry.examples.push(summary.title);
+        }
+        catalog.set(tag, entry);
       }
     }
 
-    return [...frequencies]
-      .map(([tag, uses]) => ({ tag, uses }))
+    return [...catalog.values()]
       .sort((left, right) => right.uses - left.uses || left.tag.localeCompare(right.tag, 'zh-CN'))
-      .slice(0, 100);
+      .slice(0, 100)
+      .sort((left, right) => left.tag.localeCompare(right.tag, 'zh-CN'));
   }
 }

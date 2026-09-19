@@ -35,6 +35,13 @@ function heading(text: string): TelegraphNode {
   return { tag: 'h3', children: [text] };
 }
 
+function bulletList(items: string[]): TelegraphNode {
+  return {
+    tag: 'ul',
+    children: items.map((item) => ({ tag: 'li', children: inlineNodes(item) })),
+  };
+}
+
 function link(text: string, href: string): TelegraphNode {
   return { tag: 'a', attrs: { href }, children: [text] };
 }
@@ -56,9 +63,18 @@ export function renderTelegraphPage(draft: Draft): TelegraphNode[] {
   const { story, summary } = draft;
   const nodes: TelegraphNode[] = [
     { tag: 'p', children: ['原标题：', link(story.title ?? summary.title, originalUrl(draft))] },
-    heading('原文摘要'),
-    paragraph(summary.introduction),
   ];
+
+  if (isScanCardSummary(summary)) {
+    nodes.push(
+      heading('15 秒版'),
+      paragraph(summary.quickTake),
+      heading('看点'),
+      bulletList(summary.whyItMatters),
+    );
+  }
+
+  nodes.push(heading('原文摘要'), paragraph(summary.introduction));
 
   if (draft.article.source === 'unavailable') {
     nodes.push(
@@ -90,9 +106,8 @@ export function renderTelegraphPage(draft: Draft): TelegraphNode[] {
   });
   nodes.push(
     paragraph(
-      `基于 ${draft.comments.length} 条有效评论整理，抓取时讨论串共 ${draft.commentCount} 条评论。采样可能不完整。更新于 ${generatedAt}（北京时间）。`,
+      `基于 ${draft.comments.length}/${draft.commentCount} 条评论整理 · ${generatedAt}（北京时间） · AI 生成，请结合原文核对。`,
     ),
-    paragraph('文章与讨论摘要由 AI 生成，请结合原文和评论核对。'),
     { tag: 'hr' },
     { tag: 'p', children: ['原文：', link(originalUrl(draft), originalUrl(draft))] },
     { tag: 'p', children: ['评论：', link(hackerNewsUrl(story.id), hackerNewsUrl(story.id))] },
@@ -117,7 +132,7 @@ export function renderTelegramMessage(draft: Draft, pageUrl: string): TelegramMe
   const readingTime =
     draft.article.readingMinutes === null ? '暂不可估算' : `${draft.article.readingMinutes} 分钟`;
   const title = `<a href="${escapeHtml(pageUrl)}">${escapeHtml(draft.summary.title)}</a>`;
-  const details = `原文：${escapeHtml(originalUrl(draft))}\n阅读时间：${readingTime}\n分数：${score}${score >= 400 ? ' 🔥' : ''}`;
+  const details = `${readingTime} · ${score} 分${score >= 400 ? ' 🔥' : ''} · ${draft.story.descendants ?? 0} 评论`;
   const tagLine = isScanCardSummary(draft.summary)
     ? draft.summary.tags
         .filter(isReusableTag)
@@ -127,8 +142,8 @@ export function renderTelegramMessage(draft: Draft, pageUrl: string): TelegramMe
     : '';
   const tagHeader = tagLine ? `${tagLine}\n\n` : '';
   const text = isScanCardSummary(draft.summary)
-    ? `${tagHeader}${title}\n\n⚡ <b>15 秒版</b>\n${escapeHtml(draft.summary.quickTake)}\n\n🎯 <b>看点</b>\n${draft.summary.whyItMatters.map((reason) => `• ${escapeHtml(reason)}`).join('\n')}\n\n${details}`
-    : `${title}\n${details}`;
+    ? `${tagHeader}${title}\n\n${escapeHtml(draft.summary.quickTake)}\n\n${details}`
+    : `${title}\n\n${details}`;
 
   if (text.length > 4_096) throw new Error('Telegram message exceeds 4096 characters');
 

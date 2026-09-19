@@ -47,7 +47,23 @@ export const legacySummarySchema = z.object({
   discussion: z.array(discussionSectionSchema).max(6),
 });
 
-const genericTags = new Set(['其他', '其它', '杂项', '综合', 'other', 'misc']);
+const nonSearchableTags = new Set([
+  '其他',
+  '其它',
+  '杂项',
+  '综合',
+  '网络',
+  '互联网',
+  '技术',
+  '科技',
+  '产品',
+  '社会',
+  '文化',
+  '亚文化',
+  '新闻',
+  'other',
+  'misc',
+]);
 const scanCardFields = {
   quickTake: z.string().min(1).max(180),
   whyItMatters: z.array(z.string().min(1).max(120)).min(2).max(3),
@@ -58,17 +74,17 @@ export const tagSchema = z
   .min(1)
   .max(20)
   .regex(/^[A-Za-z0-9_\u3400-\u9FFF]+$/)
-  .refine((tag) => !genericTags.has(tag.toLowerCase()), 'generic fallback tags are not allowed');
+  .refine((tag) => !nonSearchableTags.has(tag.toLowerCase()), 'tag is too broad for retrieval');
 
 const persistedTagSchema = z.string().min(1).max(24);
 
 export const summarySchema = legacySummarySchema.extend({
-  tags: z.array(tagSchema).min(1).max(2),
+  tags: z.array(tagSchema).max(2),
   ...scanCardFields,
 });
 
 const persistedScanCardSummarySchema = legacySummarySchema.extend({
-  tags: z.array(persistedTagSchema).min(1).max(4),
+  tags: z.array(persistedTagSchema).max(4),
   ...scanCardFields,
   readIf: z.string().optional(),
   skipIf: z.string().optional(),
@@ -138,6 +154,7 @@ export type FailureRecord = z.infer<typeof failureRecordSchema>;
 export interface TagFrequency {
   tag: string;
   uses: number;
+  examples: string[];
 }
 
 export type TelegraphNode =

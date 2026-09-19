@@ -19,7 +19,7 @@ export const configSchema = z.object({
   MIN_SCORE: positiveInteger(150),
   POLL_INTERVAL_SECONDS: positiveInteger(600),
   MAX_NEW_PER_CYCLE: positiveInteger(3),
-  COMMENT_UPDATE_THRESHOLD: positiveInteger(30),
+  COMMENT_UPDATE_THRESHOLD: positiveInteger(10),
   MAX_COMMENT_UPDATES: positiveInteger(3),
   PORT: positiveInteger(3_000),
 });

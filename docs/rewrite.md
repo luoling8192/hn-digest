@@ -50,7 +50,7 @@ None. Product thresholds and presentation rules remain unchanged in this rewrite
 ## Verification
 
 - The legacy baseline passed 12 tests, TypeScript checking, and a production build before the rewrite.
-- The rewritten service passes formatting, lint, strict application-and-test type checking, 27 tests, and a clean production build.
-- Built-in Node.js coverage reports 87.46% line coverage overall and 94.26% for the publication service.
+- The rewritten service passes formatting, lint, strict application-and-test type checking, 32 tests, and a clean production build.
+- Built-in Node.js coverage reports 87.51% line coverage overall and 93.46% for the publication service.
 - A read-only production check on 2026-09-18 validated all 10 persisted publication records against the new runtime schema. All were published records using the legacy summary shape.
 - No deployment, publication, or production database write was performed during the rewrite.
