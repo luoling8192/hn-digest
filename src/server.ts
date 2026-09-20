@@ -98,6 +98,7 @@ server.listen(config.PORT, '0.0.0.0', () => {
   });
   scheduler.start();
   readingPoller?.start();
+  readingService?.resumeDeepReading();
   readingBackfill?.start();
 });
 

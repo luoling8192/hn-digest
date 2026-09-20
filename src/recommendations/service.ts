@@ -80,6 +80,12 @@ export class ReadingService {
     });
   }
 
+  resumeDeepReading(): void {
+    const reader = this.store.reader(this.ownerId);
+    const batch = reader?.latestBatch ? this.store.batch(reader.latestBatch) : null;
+    if (batch?.messageId) this.prepareBatch(batch);
+  }
+
   private serial(run: () => Promise<void>): Promise<void> {
     const operation = this.operation.then(run);
     this.operation = operation.then(
@@ -454,10 +460,14 @@ export class ReadingService {
       this.store.saveReader(reader);
       this.store.saveBatch(batch);
     });
+    this.prepareBatch(batch);
+  }
+
+  private prepareBatch(batch: Batch): void {
     if (batch.kind === 'recommendations') {
       this.deepReader?.enqueue?.(this.articlesFor(batch), () =>
         this.serial(async () => {
-          const currentReader = this.store.reader(reader.userId);
+          const currentReader = this.store.reader(batch.userId);
           const currentBatch = this.store.batch(batch.id);
           if (currentReader && currentBatch) await this.edit(currentReader, currentBatch);
         }),

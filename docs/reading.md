@@ -23,6 +23,8 @@ Feedback is a state per reader/article, not an accumulated click counter. Bookma
 
 The archive worker runs within the persistent Railway service. It is independent of private-chat polling and channel publishing. Model requests use the existing OpenRouter key and its configured account budget. Completing the initial target is not proof of recommendation quality. No large backfill completion is claimed until `/admin/reading` reports actual counts.
 
+Deep summaries retain the publisher's evidence validation. Private recommendations allow one corrective model call when citation or discussion-evidence validation fails; a second invalid result remains rejected. Failed pages retain the original article link. Restart resumes unfinished deep pages for the latest recommendation batch without sending another list.
+
 ## Operation and verification
 
 Omit `TELEGRAM_OWNER_ID` to disable the private bot and archive worker. No webhook may be registered for the token when long polling is used. Run one service replica with zero deployment overlap. The worker is stopped and drained before its database is closed.

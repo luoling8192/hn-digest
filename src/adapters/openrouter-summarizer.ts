@@ -4,9 +4,19 @@ import type { Article, Comment, Draft, HackerNewsItem, Summary, TagFrequency } f
 import { summarySchema } from '../domain.js';
 import type { JsonHttpClient } from '../http-client.js';
 import type { Logger } from '../logger.js';
+import { ApplicationError } from '../errors.js';
 import { hashComments } from './hacker-news.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+class SummaryEvidenceError extends ApplicationError {
+  constructor(
+    message: string,
+    readonly summary: Summary,
+  ) {
+    super('summary_evidence_invalid', 502, message);
+  }
+}
 
 const completionSchema = z.object({
   choices: z
@@ -47,6 +57,23 @@ export class OpenRouterSummarizer {
     article: Article,
     comments: Comment[],
     tagCatalog: readonly TagFrequency[],
+    repairEvidence = false,
+  ): Promise<Draft> {
+    try {
+      return await this.generate(story, article, comments, tagCatalog);
+    } catch (error) {
+      if (!repairEvidence || !(error instanceof SummaryEvidenceError)) throw error;
+      this.logger.warn('summary_evidence_repair', { storyId: story.id, code: error.code });
+      return this.generate(story, article, comments, tagCatalog, error);
+    }
+  }
+
+  private async generate(
+    story: HackerNewsItem,
+    article: Article,
+    comments: Comment[],
+    tagCatalog: readonly TagFrequency[],
+    correction?: SummaryEvidenceError,
   ): Promise<Draft> {
     const raw = await this.http.request(
       OPENROUTER_URL,
@@ -81,6 +108,15 @@ export class OpenRouterSummarizer {
                 comments,
               }),
             },
+            ...(correction
+              ? [
+                  { role: 'assistant', content: JSON.stringify(correction.summary) },
+                  {
+                    role: 'user',
+                    content: `Validation rejected the previous response: ${correction.message}. Return the complete corrected JSON using only the original evidence. Do not infer how common an opinion is. Attribute discussion claims to 有评论指出 or 部分评论者 and only cite supplied IDs. Do not omit supported article or discussion content.`,
+                  },
+                ]
+              : []),
           ],
         }),
       },
@@ -128,21 +164,26 @@ function validateSummaryEvidence(summary: Summary, article: Article, comments: C
   const citesUnknownComment = summary.discussion.some((section) =>
     section.commentIds.some((id) => !suppliedIds.has(id)),
   );
-  if (citesUnknownComment) throw new Error('Summary cited an unknown comment');
+  if (citesUnknownComment)
+    throw new SummaryEvidenceError('Summary cited an unknown comment', summary);
   const discussionText = summary.discussion.map((section) => section.text).join('\n');
   const embedsCommentId = comments.some((comment) => discussionText.includes(String(comment.id)));
-  if (embedsCommentId) throw new Error('Summary embedded a raw comment ID in discussion text');
+  if (embedsCommentId)
+    throw new SummaryEvidenceError('Summary embedded a raw comment ID in discussion text', summary);
   if (
     /许多评论者|大多数评论者|多数评论者|(?:评论|留言|讨论|读者).{0,8}普遍|主流意见|一致认为|整体共识/u.test(
       discussionText,
     )
   ) {
-    throw new Error('Summary inferred unsupported comment consensus');
+    throw new SummaryEvidenceError('Summary inferred unsupported comment consensus', summary);
   }
   if (comments.length >= 3 && summary.discussion.length === 0) {
-    throw new Error('Summary omitted the available discussion');
+    throw new SummaryEvidenceError('Summary omitted the available discussion', summary);
   }
   if (article.source === 'unavailable' && summary.article.length > 0) {
-    throw new Error('Summary invented article sections for an unavailable source');
+    throw new SummaryEvidenceError(
+      'Summary invented article sections for an unavailable source',
+      summary,
+    );
   }
 }

@@ -109,3 +109,62 @@ test('OpenRouter summaries cannot invent article sections when extraction failed
     /invented article sections/,
   );
 });
+
+test('reading summaries repair unsupported consensus once using validator feedback, without relaxing evidence checks', async () => {
+  const invalid: Summary = {
+    ...summary,
+    discussion: [{ heading: '过度概括', text: '大多数评论者都支持这一方案', commentIds: [124] }],
+  };
+  const requests: string[] = [];
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async (_url, _service, init) => {
+        assert.equal(typeof init?.body, 'string');
+        requests.push(String(init?.body));
+        return completion(requests.length === 1 ? invalid : summary);
+      },
+    },
+    silentLogger,
+  );
+  const result = await summarizer.summarize(story, draft.article, draft.comments, [], true);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(result.summary, summary);
+  const correction = JSON.parse(requests[1] ?? '').messages;
+  assert.match(correction[3].content, /unsupported comment consensus/);
+  assert.deepEqual(JSON.parse(correction[2].content), invalid);
+
+  let invalidCalls = 0;
+  const stillInvalid = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => {
+        invalidCalls++;
+        return completion(invalid);
+      },
+    },
+    silentLogger,
+  );
+  await assert.rejects(
+    stillInvalid.summarize(story, draft.article, draft.comments, [], true),
+    /unsupported comment consensus/,
+  );
+  assert.equal(invalidCalls, 2);
+
+  let failedCalls = 0;
+  const unavailable = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => {
+        failedCalls++;
+        throw new Error('network unavailable');
+      },
+    },
+    silentLogger,
+  );
+  await assert.rejects(
+    unavailable.summarize(story, draft.article, draft.comments, [], true),
+    /network unavailable/,
+  );
+  assert.equal(failedCalls, 1);
+});

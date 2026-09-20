@@ -81,7 +81,7 @@ export class DeepReading implements DeepReader {
     const story = await this.hn.getItem(article.id);
     if (!story || story.deleted || story.dead) return article;
     const comments = await this.hn.collectComments(story);
-    const draft = await this.summarizer.summarize(story, source, comments, []);
+    const draft = await this.summarizer.summarize(story, source, comments, [], true);
     const page = await this.telegraph.save(draft, null);
     const updated = { ...article, summaryUrl: page.url };
     this.store.saveArticle(updated);

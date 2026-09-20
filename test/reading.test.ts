@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ReadingAssistant } from '../src/recommendations/assistant.js';
 import { ReadingBackfill } from '../src/recommendations/backfill.js';
-import { DeepReading } from '../src/recommendations/deep-reading.js';
+import { DeepReading, type DeepReader } from '../src/recommendations/deep-reading.js';
 import { newReader, type ReadingArticle } from '../src/recommendations/model.js';
 import { ReadingPoller } from '../src/recommendations/poller.js';
 import { renderBatch } from '../src/recommendations/presentation.js';
@@ -167,7 +167,7 @@ function callback(
     },
   };
 }
-function harness() {
+function harness(deepReader?: DeepReader) {
   const directory = mkdtempSync(join(process.cwd(), 'reading-test-'));
   const store = new ReadingStore(directory);
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
@@ -195,6 +195,7 @@ function harness() {
     { refresh: async () => {} },
     assistant,
     () => 1000,
+    deepReader,
   );
   for (let id = 1; id <= 12; id++) store.saveArticle(article(id));
   const latest = () => {
@@ -218,6 +219,40 @@ function harness() {
     },
   };
 }
+
+test('deep page completion updates the existing batch without losing selection and startup resumes without another message', async () => {
+  const callbacks: (() => Promise<void>)[] = [];
+  const queued: number[][] = [];
+  const h = harness({
+    prepare: async (article) => article,
+    enqueue: (articles, onReady) => {
+      queued.push(articles.map((article) => article.id));
+      callbacks.push(onReady);
+    },
+  });
+  try {
+    await h.service.handle(message('推荐'));
+    const { batch, messageId } = h.latest();
+    assert.deepEqual(queued[0], batch.articleIds);
+    await h.service.handle(callback(batch.id, messageId, 'select:1'));
+    const first = h.store.article(batch.articleIds[0] ?? 0);
+    assert.ok(first);
+    h.store.saveArticle({ ...first, summaryUrl: 'https://telegra.ph/ready' });
+    const ready = callbacks[0];
+    assert.ok(ready);
+    await ready();
+    const edited = h.calls.at(-1);
+    assert.equal(edited?.method, 'editMessageText');
+    assert.equal(edited?.payload.message_id, messageId);
+    assert.match(String(edited?.payload.text), /https:\/\/telegra.ph\/ready/);
+    assert.deepEqual(h.store.batch(batch.id)?.selected, [first.id]);
+    h.service.resumeDeepReading();
+    assert.deepEqual(queued[1], batch.articleIds);
+    assert.equal(h.calls.filter((call) => call.method === 'sendMessage').length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
 
 test('private reader binds trusted numeric identity; foreign users and groups cannot access preferences or buttons', async () => {
   const h = harness();
