@@ -313,6 +313,21 @@ test('backfill indexes metadata without model calls, then requires retrieved tex
             num_comments: 20,
             created_at_i: 1600000000,
           },
+          {
+            objectID: '501',
+            title: 'Ask HN: architecture',
+            points: 200,
+            num_comments: 12,
+            created_at_i: 1600000000,
+          },
+          {
+            objectID: '502',
+            title: 'Ask HN: startups',
+            url: null,
+            points: 200,
+            num_comments: 12,
+            created_at_i: 1600000000,
+          },
         ],
       }),
     },
@@ -332,6 +347,8 @@ test('backfill indexes metadata without model calls, then requires retrieved tex
   try {
     await backfill.step();
     assert.equal(h.store.inventory().indexed, 1);
+    assert.equal(h.store.candidate(501), null);
+    assert.equal(h.store.candidate(502), null);
     assert.equal(annotations, 0);
     assert.equal(h.store.article(500), null);
     h.store.put('archive:state', { month: 60, anchor: 1789948800000, lastStep: null });

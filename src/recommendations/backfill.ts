@@ -14,7 +14,7 @@ const searchSchema = z.object({
     z.object({
       objectID: z.string().regex(/^\d+$/),
       title: z.string().min(1),
-      url: z.string().nullable(),
+      url: z.string().nullable().optional(),
       points: z.number().nullable(),
       num_comments: z.number().nullable(),
       created_at_i: z.number(),
@@ -218,13 +218,17 @@ export class ReadingBackfill {
   private async run(): Promise<void> {
     while (!this.abort.signal.aborted) {
       let complete = false;
+      let failed = false;
       try {
         complete = await this.step();
       } catch (error) {
+        failed = true;
         this.logger.warn('reading_backfill_failed', { code: errorCode(error) });
       }
       try {
-        await delay(complete ? 3_600_000 : 1500, undefined, { signal: this.abort.signal });
+        await delay(complete ? 3_600_000 : failed ? 60_000 : 1500, undefined, {
+          signal: this.abort.signal,
+        });
       } catch {
         break;
       }
