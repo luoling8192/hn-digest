@@ -41,7 +41,7 @@ export class TelegramClient {
     });
   }
 
-  private async call(method: string, payload: object): Promise<unknown> {
+  async call(method: string, payload: object, signal?: AbortSignal): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImplementation(
@@ -50,7 +50,9 @@ export class TelegramClient {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(30_000),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+            : AbortSignal.timeout(30_000),
         },
       );
     } catch (error) {

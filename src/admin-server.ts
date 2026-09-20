@@ -11,6 +11,8 @@ interface AdminServerOptions {
   logger: Logger;
   startedAt?: string;
   stopping?: () => boolean;
+  readingStatus?: () => unknown;
+  sendReadingPreview?: () => Promise<void>;
 }
 
 export function createAdminServer(options: AdminServerOptions): Server {
@@ -30,6 +32,19 @@ export function createAdminServer(options: AdminServerOptions): Server {
     }
 
     try {
+      if (
+        url.pathname === '/admin/reading/send' &&
+        request.method === 'POST' &&
+        options.sendReadingPreview
+      ) {
+        await options.sendReadingPreview();
+        respondJson(response, 200, { sent: true });
+        return;
+      }
+      if (url.pathname === '/admin/reading' && request.method === 'GET') {
+        respondJson(response, 200, options.readingStatus?.() ?? { enabled: false });
+        return;
+      }
       await routeAdminRequest(request, response, url, options.service, startedAt, options.logger);
     } catch (error) {
       const code = errorCode(error);

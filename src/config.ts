@@ -5,6 +5,8 @@ const positiveInteger = (fallback: number) => z.coerce.number().int().positive()
 export const configSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(20),
   TELEGRAM_CHAT_ID: z.string().regex(/^-100\d+$/),
+  TELEGRAM_OWNER_ID: z.coerce.number().int().positive().safe().optional(),
+  READING_ARCHIVE_TARGET: positiveInteger(300),
   OPENROUTER_API_KEY: z.string().min(20),
   OPENROUTER_MODEL: z.string().default('google/gemini-2.5-flash'),
   TELEGRAPH_ACCESS_TOKEN: z.string().min(10),
