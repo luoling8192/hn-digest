@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ReadingAssistant } from '../src/recommendations/assistant.js';
 import { ReadingBackfill } from '../src/recommendations/backfill.js';
+import { DeepReading } from '../src/recommendations/deep-reading.js';
 import { newReader, type ReadingArticle } from '../src/recommendations/model.js';
 import { ReadingPoller } from '../src/recommendations/poller.js';
 import { renderBatch } from '../src/recommendations/presentation.js';
@@ -15,8 +16,114 @@ import {
 } from '../src/recommendations/service.js';
 import { ReadingStore } from '../src/recommendations/store.js';
 import { silentLogger } from '../src/logger.js';
+import { draft, story } from './fixtures.js';
 
 const owner = 100;
+
+test('deep reading shares concurrent work, persists the page and never summarizes a missing source', async () => {
+  const h = harness();
+  let summaries = 0;
+  let pages = 0;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const deep = new DeepReading(
+    h.store,
+    {
+      getItem: async () => story,
+      collectComments: async () => draft.comments,
+    },
+    {
+      summarize: async (_story, source) => {
+        summaries++;
+        assert.equal(source.text, draft.article.text);
+        await gate;
+        return draft;
+      },
+    },
+    {
+      save: async () => {
+        pages++;
+        return { path: 'reading-test', url: 'https://telegra.ph/reading-test' };
+      },
+    },
+    silentLogger,
+  );
+  try {
+    h.store.saveSource(1, draft.article);
+    const one = deep.prepare(article(1));
+    const two = deep.prepare(article(1));
+    release();
+    const results = await Promise.all([one, two]);
+    assert.equal(results[0]?.summaryUrl, 'https://telegra.ph/reading-test');
+    assert.deepEqual(results[0], results[1]);
+    await deep.prepare(article(1));
+    await deep.prepare(article(2));
+    assert.equal(summaries, 1);
+    assert.equal(pages, 1);
+    assert.equal(h.store.article(1)?.summaryUrl, 'https://telegra.ph/reading-test');
+    assert.equal(h.store.article(2)?.summaryUrl, null);
+  } finally {
+    release();
+    await deep.stop();
+    h.cleanup();
+  }
+});
+
+test('background deep reading limits concurrency and drains active work without starting queued jobs on shutdown', async () => {
+  const h = harness();
+  let summaries = 0;
+  let refreshed = 0;
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const deep = new DeepReading(
+    h.store,
+    {
+      getItem: async () => story,
+      collectComments: async () => draft.comments,
+    },
+    {
+      summarize: async () => {
+        summaries++;
+        await gate;
+        return draft;
+      },
+    },
+    {
+      save: async () => ({ path: 'reading-test', url: 'https://telegra.ph/reading-test' }),
+    },
+    silentLogger,
+  );
+  try {
+    for (let id = 1; id <= 5; id++) h.store.saveSource(id, draft.article);
+    deep.enqueue(
+      [1, 2, 3, 4, 5].map((id) => article(id)),
+      async () => {
+        refreshed++;
+      },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(summaries, 2);
+    assert.equal(refreshed, 0);
+    const stopped = deep.stop();
+    release();
+    await stopped;
+    assert.equal(summaries, 2);
+    assert.equal(refreshed, 2);
+    assert.equal(h.store.article(3)?.summaryUrl, null);
+    deep.enqueue([article(3)], async () => {
+      refreshed++;
+    });
+    assert.equal(summaries, 2);
+  } finally {
+    release();
+    await deep.stop();
+    h.cleanup();
+  }
+});
 function article(id: number, topics = ['架构']): ReadingArticle {
   return {
     id,

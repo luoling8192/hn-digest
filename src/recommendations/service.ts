@@ -454,6 +454,15 @@ export class ReadingService {
       this.store.saveReader(reader);
       this.store.saveBatch(batch);
     });
+    if (batch.kind === 'recommendations') {
+      this.deepReader?.enqueue?.(this.articlesFor(batch), () =>
+        this.serial(async () => {
+          const currentReader = this.store.reader(reader.userId);
+          const currentBatch = this.store.batch(batch.id);
+          if (currentReader && currentBatch) await this.edit(currentReader, currentBatch);
+        }),
+      );
+    }
   }
 
   private async showPreferences(reader: Reader): Promise<void> {

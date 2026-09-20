@@ -44,6 +44,9 @@ const scheduler = new DigestScheduler(service, config.POLL_INTERVAL_SECONDS * 1_
 const readingStore = config.TELEGRAM_OWNER_ID ? new ReadingStore(config.DATA_DIR) : null;
 const readingAssistant = new OpenRouterReadingAssistant(config, http);
 const readingCatalog = readingStore ? new ReadingCatalog(readingStore, repository) : null;
+const deepReading = readingStore
+  ? new DeepReading(readingStore, hackerNews, summarizer, telegraph, jsonLogger)
+  : undefined;
 const readingService =
   config.TELEGRAM_OWNER_ID && readingStore && readingCatalog
     ? new ReadingService(
@@ -53,7 +56,7 @@ const readingService =
         readingCatalog,
         readingAssistant,
         Date.now,
-        new DeepReading(readingStore, hackerNews, summarizer, telegraph),
+        deepReading,
       )
     : null;
 const readingPoller =
@@ -109,7 +112,7 @@ async function shutdown(signal: string): Promise<void> {
   jsonLogger.info('shutdown_started', { signal });
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  await Promise.all([readingPoller?.stop(), readingBackfill?.stop()]);
+  await Promise.all([readingPoller?.stop(), readingBackfill?.stop(), deepReading?.stop()]);
   readingStore?.close();
   const deadline = Date.now() + 170_000;
   while (service.isRunning && Date.now() < deadline) {

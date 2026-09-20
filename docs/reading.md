@@ -6,7 +6,7 @@ The existing bot also accepts private messages from `TELEGRAM_OWNER_ID`. This is
 
 The reader gets up to five articles per message. Inline number buttons select articles; selection does not alter preference weights. Save, more-like-this, fewer-like-this, cancel, and undo edit the existing message. Saved articles paginate in place. New recommendations append a new batch. Replying to a previous batch uses that batch's numbering. Unresolvable replies ask for the target batch instead of using the latest one.
 
-Commands: `/start`, `/recommend`, `/saved`, `/preferences`, `/help`. Chinese text and natural-language preference changes are also accepted. Detailed article questions use stored source text. The “聊聊这篇” action creates and caches a full Telegraph summary with a separate, cited HN discussion section on demand; it does not publish to the channel.
+Commands: `/start`, `/recommend`, `/saved`, `/preferences`, `/help`. Chinese text and natural-language preference changes are also accepted. Detailed article questions use stored source text. Recommended articles are queued for full Telegraph summaries with separate, cited HN discussion sections (two concurrent jobs, at most ten queued). The list appears immediately; links are updated in place as summaries become ready. “聊聊这篇” reuses or creates that cached page on demand. Neither path publishes to the channel.
 
 ## Account and storage
 
