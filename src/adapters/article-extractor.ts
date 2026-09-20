@@ -11,6 +11,13 @@ import { htmlToPlainText } from './hacker-news.js';
 const MAX_REDIRECTS = 5;
 const MAX_DOWNLOAD_BYTES = 3_000_000;
 const MAX_SUMMARY_CHARACTERS = 45_000;
+const MIN_ARTICLE_CHARACTERS = 200;
+const READER_BASE_URL = 'https://r.jina.ai/';
+
+type Fetcher = (
+  input: string | URL,
+  init?: Parameters<typeof undiciFetch>[1],
+) => ReturnType<typeof undiciFetch>;
 
 export function isPublicAddress(address: string): boolean {
   try {
@@ -61,7 +68,10 @@ const publicNetworkDispatcher = new Agent({
 });
 
 export class ArticleExtractor {
-  constructor(private readonly logger: Logger) {}
+  constructor(
+    private readonly logger: Logger,
+    private readonly fetcher: Fetcher = undiciFetch,
+  ) {}
 
   async extract(story: HackerNewsItem): Promise<Article> {
     if (!story.url) {
@@ -74,18 +84,18 @@ export class ArticleExtractor {
     }
 
     try {
-      return await this.extractRemote(story.url);
+      return await this.extractRemote(story.url, story.id);
     } catch (error) {
       this.logger.warn('article_unavailable', { storyId: story.id, code: errorCode(error) });
       return { text: '', source: 'unavailable', readingMinutes: null };
     }
   }
 
-  private async extractRemote(rawUrl: string): Promise<Article> {
+  private async extractRemote(rawUrl: string, storyId: number): Promise<Article> {
     let url = parsePublicHttpUrl(rawUrl);
 
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      const response = await undiciFetch(url, {
+      const response = await this.fetcher(url, {
         dispatcher: publicNetworkDispatcher,
         redirect: 'manual',
         signal: AbortSignal.timeout(20_000),
@@ -116,17 +126,52 @@ export class ArticleExtractor {
 
       const raw = await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
       const text = contentType.includes('text/plain') ? raw.trim() : readableText(raw, url);
-      if (text.length < 200) throw new Error('Insufficient article text');
+      if (text.length < MIN_ARTICLE_CHARACTERS) {
+        const renderedText = await this.extractRendered(url);
+        this.logger.info('article_reader_fallback', { storyId });
+        return articleFromText(renderedText);
+      }
 
-      return {
-        text: text.slice(0, MAX_SUMMARY_CHARACTERS),
-        source: 'article',
-        readingMinutes: estimateReadingMinutes(text),
-      };
+      return articleFromText(text);
     }
 
     throw new Error('Too many article redirects');
   }
+
+  private async extractRendered(url: URL): Promise<string> {
+    const target = new URL(url);
+    target.hash = '';
+    const readerUrl = new URL(`${READER_BASE_URL}${target.href}`);
+    const response = await this.fetcher(readerUrl, {
+      dispatcher: publicNetworkDispatcher,
+      redirect: 'error',
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        'user-agent': 'HNDigest/2.0 (article summarizer)',
+        accept: 'text/plain',
+        'x-engine': 'browser',
+        'x-timeout': '20',
+      },
+    });
+
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Article reader returned HTTP ${response.status}`);
+    }
+
+    const raw = await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
+    const text = readerMarkdownContent(raw);
+    if (text.length < MIN_ARTICLE_CHARACTERS) throw new Error('Insufficient rendered article text');
+    return text;
+  }
+}
+
+function articleFromText(text: string): Article {
+  return {
+    text: text.slice(0, MAX_SUMMARY_CHARACTERS),
+    source: 'article',
+    readingMinutes: estimateReadingMinutes(text),
+  };
 }
 
 async function readLimitedBody(
@@ -157,4 +202,10 @@ function readableText(html: string, url: URL): string {
   const text = new Readability(dom.window.document).parse()?.textContent?.trim() ?? '';
   dom.window.close();
   return text;
+}
+
+function readerMarkdownContent(raw: string): string {
+  const marker = 'Markdown Content:';
+  const markerIndex = raw.indexOf(marker);
+  return (markerIndex === -1 ? raw : raw.slice(markerIndex + marker.length)).trim();
 }

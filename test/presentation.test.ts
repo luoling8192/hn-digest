@@ -55,6 +55,17 @@ test('renders scan cards without forcing a tag', () => {
   assert.match(message.text, /一句话 &lt;结论&gt;/);
 });
 
+test('omits reading metadata when the article could not be extracted', () => {
+  const unavailable: Draft = {
+    ...draft,
+    article: { text: '', source: 'unavailable', readingMinutes: null },
+  };
+
+  const message = renderTelegramMessage(unavailable, 'https://telegra.ph/unavailable');
+  assert.match(message.text, /200 分 · 10 评论/);
+  assert.doesNotMatch(message.text, /阅读|分钟|估算/);
+});
+
 test('keeps legacy persisted summaries readable and deliverable', () => {
   const legacyDraft: Draft = {
     ...draft,

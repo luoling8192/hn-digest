@@ -129,10 +129,14 @@ export function escapeHtml(text: string): string {
 
 export function renderTelegramMessage(draft: Draft, pageUrl: string): TelegramMessagePayload {
   const score = draft.story.score ?? 0;
-  const readingTime =
-    draft.article.readingMinutes === null ? '暂不可估算' : `${draft.article.readingMinutes} 分钟`;
   const title = `<a href="${escapeHtml(pageUrl)}">${escapeHtml(draft.summary.title)}</a>`;
-  const details = `${readingTime} · ${score} 分${score >= 400 ? ' 🔥' : ''} · ${draft.story.descendants ?? 0} 评论`;
+  const details = [
+    draft.article.readingMinutes === null ? null : `${draft.article.readingMinutes} 分钟`,
+    `${score} 分${score >= 400 ? ' 🔥' : ''}`,
+    `${draft.story.descendants ?? 0} 评论`,
+  ]
+    .filter((detail) => detail !== null)
+    .join(' · ');
   const tagLine = isScanCardSummary(draft.summary)
     ? draft.summary.tags
         .filter(isReusableTag)

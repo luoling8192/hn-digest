@@ -17,12 +17,12 @@ All secrets belong in ignored local configuration or Railway Variables. Never pu
 ## Behavior
 
 - Polls the first 30 HN top stories every 10 minutes; publishes stories scoring at least 150. At most three new stories per cycle, including initial startup.
-- Extracts HTML with Mozilla Readability. Documents that cannot be extracted (including unsupported PDFs and paywalls) are explicitly marked unavailable. HN text posts are supported. It never substitutes a guessed article summary.
+- Extracts HTML with Mozilla Readability. JavaScript-only pages fall back to Jina Reader's browser-rendered Markdown when the static response has no usable article text. Documents that still cannot be extracted (including unsupported PDFs and paywalls) are explicitly marked unavailable. HN text posts are supported. It never substitutes a guessed article summary.
 - Samples up to 160 live comments, retaining parent IDs, with a 48,000-character total budget and a 2,500-character per-comment cap. Sampling is breadth-first, not vote-ranked; HN does not expose comment scores.
 - Generates structured Simplified Chinese output through OpenRouter. Validates citations against the exact supplied comments and renders separate article and discussion sections. Telegraph content stays below its 64 KB limit.
 - Telegram messages use zero to two AI-selected retrieval tags, a linked title, one-sentence takeaway, and compact reading/score/comment metadata. Broad category labels such as `网络` and `产品` are rejected. The model receives canonical historical tags with usage counts and representative titles, reusing a tag only for the same searchable concept. The Telegraph page contains the highlights, complete article summary, and HN discussion summary.
 - Refreshes score/comment metadata for 48 hours after publication. Discussion summaries regenerate after at least one hour when comments grow by 10, grow by 20% after the first 10 comments, or remain changed for 12 hours. Updates reuse the original Telegraph page and Telegram message and are capped at three per story.
-- The reading estimate describes the source article (220 words or 400 Han characters per minute). A fire marker is shown at 400 points; this is an explicit product rule, not a claim about the reference channel's hidden implementation.
+- The reading estimate describes the source article (220 words or 400 Han characters per minute) and is omitted when the article could not be extracted. A fire marker is shown at 400 points; this is an explicit product rule, not a claim about the reference channel's hidden implementation.
 
 ## Railway
 
@@ -73,6 +73,6 @@ Dependencies enter the application service through explicit interfaces. Tests re
 
 ## Reuse
 
-Uses the official Hacker News, Telegram Bot, and Telegraph HTTP APIs, Mozilla Readability, jsdom, Zod, and undici. The earlier `hacker-news-worker` research informed the scope, but its Cloudflare-specific delivery implementation was not copied: Railway persistence and recoverable delivery need different state handling.
+Uses the official Hacker News, Telegram Bot, and Telegraph HTTP APIs, Mozilla Readability, jsdom, Zod, and undici. When static extraction yields no usable text, the public source URL is sent to Jina Reader for browser rendering; article contents are never replaced with generated text. The earlier `hacker-news-worker` research informed the scope, but its Cloudflare-specific delivery implementation was not copied: Railway persistence and recoverable delivery need different state handling.
 
 See [live acceptance](docs/acceptance.md) for the deployment and verification evidence.
