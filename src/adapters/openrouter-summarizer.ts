@@ -57,7 +57,7 @@ export class OpenRouterSummarizer {
     article: Article,
     comments: Comment[],
     tagCatalog: readonly TagFrequency[],
-    repairEvidence = false,
+    repairEvidence = true,
   ): Promise<Draft> {
     try {
       return await this.generate(story, article, comments, tagCatalog);
@@ -129,7 +129,19 @@ export class OpenRouterSummarizer {
     if (choice.finish_reason === 'length') throw new Error('Summary exceeded output limit');
 
     const summary = parseSummary(choice.message.content);
-    validateSummaryEvidence(summary, article, comments);
+    try {
+      validateSummaryEvidence(summary, article, comments);
+    } catch (error) {
+      if (error instanceof SummaryEvidenceError) {
+        this.logger.warn('summary_evidence_rejected', {
+          storyId: story.id,
+          code: error.code,
+          reason: error.message,
+          correction: correction !== undefined,
+        });
+      }
+      throw error;
+    }
     this.logger.info('summary_generated', {
       storyId: story.id,
       comments: comments.length,

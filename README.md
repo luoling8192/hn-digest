@@ -51,6 +51,8 @@ Automatic mode is stored in SQLite once changed through the admin API and then o
 
 ## Delivery guarantees and recovery
 
+Channel and reading summaries retry evidence validation failures once with the rejected output and validator feedback. The correction must pass the same checks; HTTP and network failures do not trigger this correction. `summary_evidence_rejected` logs include the story ID, specific validation reason, and whether the rejected output was already a correction, without logging source material or generated summaries.
+
 Known Telegram rejections return to `ready` and retry with exponential backoff. Network errors or a process interruption during `sendMessage` become `uncertain` and **are not automatically resent**. Telegram Bot API has no client idempotency key, so claiming exactly-once delivery would be inaccurate.
 
 If `/admin/status` reports `uncertain`, first inspect the target channel. Reconcile the SQLite publication with the actual message ID if it exists; only reset it to `ready` after verifying no message was delivered. Stop the worker before manual database repair. No unauthenticated reset endpoint is exposed.
