@@ -19,6 +19,62 @@ function completion(summary: Summary): unknown {
   };
 }
 
+test('biodiversity report does not repeat HN discussion under the article summary', async () => {
+  const discussion =
+    '评论中有人补充了恢复的反例：北美鳕鱼渔场过度捕捞后虽被管制，但种群只稳定在远低于从前的水平，因为其他鱼类、水母等已占据了其生态位。';
+  const contaminated: Summary = {
+    ...summary,
+    article: [{ heading: null, paragraphs: ['研究整合了423篇已发表研究。', discussion] }],
+    discussion: [{ text: discussion.replaceAll('，', '， '), commentIds: [124] }],
+  };
+  const corrected: Summary = {
+    ...contaminated,
+    article: [{ heading: null, paragraphs: ['研究整合了423篇已发表研究。'] }],
+  };
+  const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async (_url, _service, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return completion(requests.length === 1 ? contaminated : corrected);
+      },
+    },
+    silentLogger,
+  );
+  const result = await summarizer.summarize(story, draft.article, draft.comments, []);
+  assert.equal(requests.length, 2);
+  assert.match(requests[1]?.messages.at(-1)?.content ?? '', /duplicated discussion in article/);
+  assert.deepEqual(result.summary.article, corrected.article);
+  assert.deepEqual(result.summary.discussion, contaminated.discussion);
+});
+
+test('persistent article-discussion duplication is rejected after one repair', async () => {
+  const text =
+    '有人强调后果的时间成本：若更久是百万年，对人类并非好消息；当下与后代要承受森林消失期间的损失。';
+  const contaminated: Summary = {
+    ...summary,
+    article: [{ heading: null, paragraphs: [text] }],
+    discussion: [{ text, commentIds: [124] }],
+  };
+  let calls = 0;
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => {
+        calls++;
+        return completion(contaminated);
+      },
+    },
+    silentLogger,
+  );
+  await assert.rejects(
+    summarizer.summarize(story, draft.article, draft.comments, []),
+    /duplicated discussion/,
+  );
+  assert.equal(calls, 2);
+});
+
 test('OpenRouter summaries retain supplied comment evidence in the resulting draft', async () => {
   let requestBody = '';
   const http: JsonHttpClient = {

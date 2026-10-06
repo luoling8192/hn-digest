@@ -43,6 +43,8 @@ Tags are search handles, not broad categories. Choose 0-2 concise tags that a re
 
 Write a coherent digest, not a translated transcript or a catalog of topics. quickTake is the single lead sentence: do not repeat it in a separate introduction or list of highlights. Preserve the article's important facts, reasoning, quantitative comparisons, caveats, and conclusion. Use natural paragraphs; article headings should be null unless a long, complex source genuinely needs navigation. Never add headings just to fill a template.
 
+Source boundaries are mandatory: title, quickTake and article may use ONLY the supplied article and story metadata, NEVER the supplied HN comments. article is not the complete digest: do not append discussion paragraphs to it. All HN commenters' examples, interpretations, objections and replies belong ONLY in discussion with their supporting commentIds. Do not repeat discussion content in article, even with different wording. A commenter replying to another commenter is not the original article's author.
+
 Length follows information density, not the token allowance. As editorial guidance, a short news item usually needs 200-400 Chinese characters of article summary, an ordinary article 400-800, and a detailed technical investigation 800-1400 when its evidence requires it. The discussion usually needs 150-400 Chinese characters, or up to about 600 for substantive disagreements or consequential responses. These are not minimums: short or sparse sources should stay short; do not delete crucial evidence to hit a target. The array limits are safety ceilings, never requested counts.
 
 Read parent relationships before synthesizing discussion. Write connected prose without topic headings, bullet points, or a fixed paragraph count. Select what changes the reader's understanding: corrections, conflicting firsthand experience, and consequential responses. Merge overlapping issues and omit tangents or repeated reactions. Move logically from the main contribution to the disagreement and what remains unresolved, rather than starting every sentence with 有评论指出 / 另有评论认为. Explain unfamiliar technical terms briefly. Do not manufacture opposing sides or consensus. Keep the article's claims separate from commenters' interpretations.
@@ -221,6 +223,21 @@ function parseSummary(content: string): Summary {
 }
 
 function validateSummaryEvidence(summary: Summary, article: Article, comments: Comment[]): void {
+  const normalize = (text: string) => text.replace(/[\p{P}\p{Z}\p{S}\s]/gu, '').toLowerCase();
+  const articleParagraphs = summary.article.flatMap((section) => section.paragraphs.map(normalize));
+  const sharedPassageLength = 40;
+  for (const section of summary.discussion) {
+    const discussion = normalize(section.text);
+    for (let offset = 0; offset <= discussion.length - sharedPassageLength; offset++) {
+      const passage = discussion.slice(offset, offset + sharedPassageLength);
+      if (articleParagraphs.some((paragraph) => paragraph.includes(passage))) {
+        throw new SummaryEvidenceError(
+          'Summary duplicated discussion in article. Rebuild article using only the supplied article source; keep comment-derived material only in discussion. Do not merely paraphrase the duplicated passage.',
+          summary,
+        );
+      }
+    }
+  }
   const suppliedIds = new Set(comments.map((comment) => comment.id));
   const citesUnknownComment = summary.discussion.some((section) =>
     section.commentIds.some((id) => !suppliedIds.has(id)),

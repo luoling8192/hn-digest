@@ -56,7 +56,7 @@ Automatic mode is stored in SQLite once changed through the admin API and then o
 
 ## Delivery guarantees and recovery
 
-Channel and reading summaries retry evidence validation failures once with the rejected output and validator feedback. The correction must pass the same checks; HTTP and network failures do not trigger this correction. `summary_evidence_rejected` logs include the story ID, specific validation reason, and whether the rejected output was already a correction, without logging source material or generated summaries.
+Channel and reading summaries retry evidence validation failures once with the rejected output and validator feedback. Article and discussion paragraphs sharing a contiguous passage of 40 characters after punctuation/whitespace normalization are rejected, with instructions to keep comment-derived material only in discussion. This catches copied passages, not arbitrary semantic paraphrases. The correction must pass the same checks; HTTP and network failures do not trigger this correction. `summary_evidence_rejected` logs include the story ID, specific validation reason, and whether the rejected output was already a correction, without logging source material or generated summaries.
 
 Known Telegram rejections return to `ready` and retry with exponential backoff. Network errors or a process interruption during `sendMessage` become `uncertain` and **are not automatically resent**. Telegram Bot API has no client idempotency key, so claiming exactly-once delivery would be inaccurate.
 
