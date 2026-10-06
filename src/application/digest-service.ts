@@ -141,17 +141,34 @@ export class DigestService {
     return this.runExclusive(async () => {
       const result = { published: 0, updated: 0, failed: 0 };
       const stories = await this.dependencies.getTopStories();
+      this.logger.info('candidates_scanned', {
+        count: stories.length,
+        minScore: this.config.MIN_SCORE,
+        maxAttempts: this.config.MAX_NEW_PER_CYCLE,
+      });
       const topStories = new Map(stories.map((story) => [story.id, story]));
       let attempted = 0;
 
       for (const story of stories) {
         const now = this.runtime.now();
-        if ((story.score ?? 0) < this.config.MIN_SCORE) continue;
-        if (!this.repository.retryAllowed(story.id, now)) continue;
-
         const existing = this.repository.getPublication(story.id);
-        if (existing && existing.state !== 'ready') continue;
-        if (attempted >= this.config.MAX_NEW_PER_CYCLE) break;
+        const reason =
+          (story.score ?? 0) < this.config.MIN_SCORE
+            ? 'below_score'
+            : !this.repository.retryAllowed(story.id, now)
+              ? 'retry_backoff'
+              : existing && existing.state !== 'ready'
+                ? existing.state
+                : attempted >= this.config.MAX_NEW_PER_CYCLE
+                  ? 'cycle_limit'
+                  : 'selected';
+        this.logger.info('candidate_evaluated', {
+          storyId: story.id,
+          rank: stories.indexOf(story) + 1,
+          score: story.score ?? 0,
+          reason,
+        });
+        if (reason !== 'selected') continue;
         attempted += 1;
 
         try {

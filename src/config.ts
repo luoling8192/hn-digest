@@ -8,6 +8,7 @@ export const configSchema = z.object({
   TELEGRAM_OWNER_ID: z.coerce.number().int().positive().safe().optional(),
   READING_ARCHIVE_TARGET: positiveInteger(300),
   OPENROUTER_API_KEY: z.string().min(20),
+  JINA_API_KEY: z.string().optional(),
   OPENROUTER_MODEL: z.string().default('google/gemini-2.5-flash'),
   OPENROUTER_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1_000).max(64_000).default(12_000),
   TELEGRAPH_ACCESS_TOKEN: z.string().min(10),

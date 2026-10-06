@@ -3,8 +3,9 @@ import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import ipaddr from 'ipaddr.js';
 import { Agent, fetch as undiciFetch } from 'undici';
+import { z } from 'zod';
 import type { Article, HackerNewsItem } from '../domain.js';
-import { errorCode } from '../errors.js';
+import { ApplicationError, errorCode, RemoteHttpError } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { htmlToPlainText } from './hacker-news.js';
 
@@ -71,6 +72,7 @@ export class ArticleExtractor {
   constructor(
     private readonly logger: Logger,
     private readonly fetcher: Fetcher = undiciFetch,
+    private readonly jinaApiKey?: string,
   ) {}
 
   async extract(story: HackerNewsItem): Promise<Article> {
@@ -83,12 +85,42 @@ export class ArticleExtractor {
       };
     }
 
+    let url: URL;
     try {
-      return await this.extractRemote(story.url, story.id);
-    } catch (error) {
-      this.logger.warn('article_unavailable', { storyId: story.id, code: errorCode(error) });
+      url = parsePublicHttpUrl(story.url);
+    } catch {
+      this.logger.warn('article_unavailable', { storyId: story.id, code: 'unsafe_article_url' });
       return { text: '', source: 'unavailable', readingMinutes: null };
     }
+    for (const method of ['jina', 'direct'] as const) {
+      const startedAt = Date.now();
+      const fields = { storyId: story.id, host: url.hostname, method };
+      this.logger.info('article_fetch_started', fields);
+      try {
+        const article =
+          method === 'jina'
+            ? articleFromText(await this.extractRendered(url, story.id))
+            : await this.extractRemote(url.href, story.id);
+        this.logger.info('article_fetch_succeeded', {
+          ...fields,
+          durationMs: Date.now() - startedAt,
+          characters: article.text.length,
+        });
+        return article;
+      } catch (error) {
+        this.logger.warn('article_fetch_failed', {
+          ...fields,
+          durationMs: Date.now() - startedAt,
+          code: articleErrorCode(error),
+          status: error instanceof RemoteHttpError ? error.status : undefined,
+        });
+      }
+    }
+    this.logger.warn('article_unavailable', {
+      storyId: story.id,
+      code: 'all_fetch_methods_failed',
+    });
+    return { text: '', source: 'unavailable', readingMinutes: null };
   }
 
   private async extractRemote(rawUrl: string, storyId: number): Promise<Article> {
@@ -104,41 +136,43 @@ export class ArticleExtractor {
           accept: 'text/html,text/plain',
         },
       });
+      this.logger.info('article_fetch_response', {
+        storyId,
+        method: 'direct',
+        status: response.status,
+        contentType: response.headers.get('content-type'),
+      });
 
       if (response.status >= 300 && response.status < 400) {
         await response.body?.cancel();
         const location = response.headers.get('location');
-        if (!location) throw new Error('Article redirect omitted its location');
+        if (!location)
+          throw new ApplicationError('article_redirect_missing', 502, 'Missing redirect');
         url = parsePublicHttpUrl(new URL(location, url).href);
         continue;
       }
 
       if (!response.ok) {
         await response.body?.cancel();
-        throw new Error(`Article returned HTTP ${response.status}`);
+        throw new RemoteHttpError('article', response.status);
       }
 
       const contentType = response.headers.get('content-type') ?? '';
       if (!/text\/html|text\/plain|application\/xhtml/.test(contentType)) {
         await response.body?.cancel();
-        throw new Error('Unsupported article type');
+        throw new ApplicationError('article_type_unsupported', 502, 'Unsupported article type');
       }
 
       const raw = await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
       const text = contentType.includes('text/plain') ? raw.trim() : readableText(raw, url);
-      if (text.length < MIN_ARTICLE_CHARACTERS) {
-        const renderedText = await this.extractRendered(url);
-        this.logger.info('article_reader_fallback', { storyId });
-        return articleFromText(renderedText);
-      }
-
+      validateArticleText(text);
       return articleFromText(text);
     }
 
-    throw new Error('Too many article redirects');
+    throw new ApplicationError('article_redirect_limit', 502, 'Too many article redirects');
   }
 
-  private async extractRendered(url: URL): Promise<string> {
+  private async extractRendered(url: URL, storyId: number): Promise<string> {
     const target = new URL(url);
     target.hash = '';
     const readerUrl = new URL(`${READER_BASE_URL}${target.href}`);
@@ -148,21 +182,29 @@ export class ArticleExtractor {
       signal: AbortSignal.timeout(30_000),
       headers: {
         'user-agent': 'HNDigest/2.0 (article summarizer)',
-        accept: 'text/plain',
-        'x-engine': 'browser',
+        accept: 'application/json',
+        ...(this.jinaApiKey ? { authorization: `Bearer ${this.jinaApiKey}` } : {}),
         'x-timeout': '20',
       },
+    });
+    this.logger.info('article_fetch_response', {
+      storyId,
+      method: 'jina',
+      status: response.status,
+      contentType: response.headers.get('content-type'),
     });
 
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`Article reader returned HTTP ${response.status}`);
+      throw new RemoteHttpError('jina', response.status);
     }
 
     const raw = await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
-    const text = readerMarkdownContent(raw);
-    if (text.length < MIN_ARTICLE_CHARACTERS) throw new Error('Insufficient rendered article text');
-    return text;
+    const result = z
+      .object({ data: z.object({ content: z.string(), title: z.string().optional() }) })
+      .parse(JSON.parse(raw));
+    validateArticleText(result.data.content, result.data.title);
+    return result.data.content;
   }
 }
 
@@ -189,7 +231,7 @@ async function readLimitedBody(
     size += value.length;
     if (size > limit) {
       await reader.cancel();
-      throw new Error('Article too large');
+      throw new ApplicationError('article_too_large', 502, 'Article too large');
     }
     chunks.push(value);
   }
@@ -204,8 +246,36 @@ function readableText(html: string, url: URL): string {
   return text;
 }
 
-function readerMarkdownContent(raw: string): string {
-  const marker = 'Markdown Content:';
-  const markerIndex = raw.indexOf(marker);
-  return (markerIndex === -1 ? raw : raw.slice(markerIndex + marker.length)).trim();
+function validateArticleText(text: string, title = ''): void {
+  if (
+    /^(just a moment|access denied|attention required|verify you are human|security checkpoint)/i.test(
+      title.trim(),
+    ) ||
+    /^(?:#\s*)?(?:just a moment|verify you are human|checking your browser|enable javascript and cookies to continue|access denied)/i.test(
+      text.trim(),
+    )
+  ) {
+    throw new ApplicationError(
+      'article_challenge_page',
+      502,
+      'Article response is an access challenge',
+    );
+  }
+  if (text.trim().length < MIN_ARTICLE_CHARACTERS) {
+    throw new ApplicationError('article_text_insufficient', 502, 'Insufficient article text');
+  }
+}
+
+function articleErrorCode(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') return 'article_timeout';
+    if (
+      error.cause instanceof Error &&
+      'code' in error.cause &&
+      typeof error.cause.code === 'string'
+    ) {
+      if (/^(?:E[A-Z]+|UND_ERR_[A-Z_]+)$/.test(error.cause.code)) return error.cause.code;
+    }
+  }
+  return errorCode(error);
 }
