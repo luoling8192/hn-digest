@@ -1,19 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Draft } from '../src/domain.js';
-import { publicationSchema, summarySchema } from '../src/domain.js';
-import { readyPublication } from '../src/domain.js';
+import { publicationSchema, readyPublication, summarySchema } from '../src/domain.js';
 import { renderTelegramMessage, renderTelegraphPage } from '../src/presentation.js';
 import { draft } from './fixtures.js';
 
 test('renders separate article and discussion sections with direct comment references', () => {
   const content = JSON.stringify(renderTelegraphPage(draft));
-  assert.match(content, /15 秒版/);
-  assert.match(content, /看点/);
+  assert.doesNotMatch(content, /15 秒版|看点|相关评论：/);
   assert.match(content, /一句话 <结论>/);
-  assert.match(content, /解决具体问题/);
   assert.match(content, /原文摘要/);
-  assert.match(content, /HN 讨论摘要/);
+  assert.match(content, /HN 讨论综述/);
   assert.match(content, /item\?id=124/);
 
   const message = renderTelegramMessage(draft, 'https://telegra.ph/test');
@@ -94,6 +91,10 @@ test('previous scan cards with suitability fields remain readable without render
       summary: {
         ...draft.summary,
         tags: ['其他', '网络', 'AI', '编程语言'],
+        format: undefined,
+        introduction: '旧导语',
+        whyItMatters: ['原先的看点', '另一个看点'],
+        discussion: [{ heading: '旧主题', text: '旧讨论内容', commentIds: [124] }],
         readIf: '关注 AI 编程',
         skipIf: '只需要成熟工具',
       },
@@ -103,4 +104,53 @@ test('previous scan cards with suitability fields remain readable without render
   const message = renderTelegramMessage(persisted.draft, 'https://telegra.ph/previous-card');
   assert.match(message.text, /#AI #编程语言/);
   assert.doesNotMatch(message.text, /#其他|#网络|关注 AI 编程|只需要成熟工具|适合你|可以跳过/);
+});
+
+test('narrative paragraphs use shared citation numbers and no misleading coverage fraction', () => {
+  const narrative: Draft = {
+    ...draft,
+    commentCount: 0,
+    summary: {
+      ...draft.summary,
+      format: 'narrative-v1',
+      title: '新摘要',
+      tags: [],
+      quickTake: '唯一导语',
+      article: [{ heading: null, paragraphs: ['第一段原文', '第二段原文'] }],
+      discussion: [
+        { text: '经验与反例。', commentIds: [124, 125, 124] },
+        { text: '后续回应。', commentIds: [125, 126] },
+      ],
+    },
+  };
+  const nodes = renderTelegraphPage(narrative);
+  const paragraphs = nodes.filter((node) => typeof node !== 'string' && node.tag === 'p');
+  const discussion = paragraphs.filter(
+    (node) =>
+      typeof node !== 'string' &&
+      ['经验与反例。', '后续回应。'].includes(String(node.children?.[0])),
+  );
+  assert.deepEqual(
+    discussion.map((node) =>
+      typeof node === 'string'
+        ? []
+        : node.children
+            ?.filter((child) => typeof child !== 'string')
+            .map((child) => (typeof child === 'string' ? null : child.children)),
+    ),
+    [
+      [['[1]'], ['[2]']],
+      [['[2]'], ['[3]']],
+    ],
+  );
+  const content = JSON.stringify(nodes);
+  assert.doesNotMatch(content, /"h4"|相关评论|1\/0|15 秒版|看点/);
+  assert.match(content, /本次读取 1 条评论/);
+  assert.equal(content.match(/唯一导语/g)?.length, 1);
+  assert.match(content, /第一段原文/);
+  assert.match(content, /第二段原文/);
+  assert.equal(
+    publicationSchema.parse(readyPublication(narrative, 1)).draft.summary.article[0]?.heading,
+    null,
+  );
 });

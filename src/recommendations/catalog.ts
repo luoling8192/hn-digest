@@ -52,7 +52,9 @@ export class ReadingCatalog {
         ),
         topics: [
           ...new Set([
-            ...inferTopics(`${story.title} ${summary.title} ${summary.introduction}`),
+            ...inferTopics(
+              `${story.title} ${summary.title} ${isScanCardSummary(summary) ? summary.quickTake : summary.introduction}`,
+            ),
             ...tags,
           ]),
         ].slice(0, 8),

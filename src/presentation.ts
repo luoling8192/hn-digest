@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
+import { hackerNewsUrl } from './adapters/hacker-news.js';
 import type { Draft, TelegraphNode } from './domain.js';
 import { isReusableTag, isScanCardSummary } from './domain.js';
-import { hackerNewsUrl } from './adapters/hacker-news.js';
 
 export interface TelegramMessagePayload {
   text: string;
@@ -35,13 +35,6 @@ function heading(text: string): TelegraphNode {
   return { tag: 'h3', children: [text] };
 }
 
-function bulletList(items: string[]): TelegraphNode {
-  return {
-    tag: 'ul',
-    children: items.map((item) => ({ tag: 'li', children: inlineNodes(item) })),
-  };
-}
-
 function link(text: string, href: string): TelegraphNode {
   return { tag: 'a', attrs: { href }, children: [text] };
 }
@@ -66,15 +59,11 @@ export function renderTelegraphPage(draft: Draft): TelegraphNode[] {
   ];
 
   if (isScanCardSummary(summary)) {
-    nodes.push(
-      heading('15 秒版'),
-      paragraph(summary.quickTake),
-      heading('看点'),
-      bulletList(summary.whyItMatters),
-    );
+    nodes.push(paragraph(summary.quickTake));
   }
 
-  nodes.push(heading('原文摘要'), paragraph(summary.introduction));
+  nodes.push(heading('原文摘要'));
+  if ('introduction' in summary) nodes.push(paragraph(summary.introduction));
 
   if (draft.article.source === 'unavailable') {
     nodes.push(
@@ -85,19 +74,22 @@ export function renderTelegraphPage(draft: Draft): TelegraphNode[] {
   }
 
   for (const section of summary.article) {
-    nodes.push(heading(section.heading), ...section.paragraphs.map(paragraph));
+    if (section.heading) nodes.push(heading(section.heading));
+    nodes.push(...section.paragraphs.map(paragraph));
   }
 
-  nodes.push({ tag: 'hr' }, heading('HN 讨论摘要'));
+  nodes.push({ tag: 'hr' }, heading('HN 讨论综述'));
   if (summary.discussion.length === 0) nodes.push(paragraph('目前暂无足够的有效评论可供总结。'));
+  const referenceNumbers = new Map<number, number>();
   for (const section of summary.discussion) {
-    nodes.push({ tag: 'h4', children: [section.heading] }, paragraph(section.text));
-    const references: TelegraphNode[] = ['相关评论：'];
-    section.commentIds.forEach((id, index) => {
-      if (index > 0) references.push(' · ');
-      references.push(link(String(index + 1), hackerNewsUrl(id)));
-    });
-    nodes.push({ tag: 'p', children: references });
+    if ('heading' in section) nodes.push({ tag: 'h4', children: [section.heading] });
+    const children = inlineNodes(section.text);
+    for (const id of new Set(section.commentIds)) {
+      const number = referenceNumbers.get(id) ?? referenceNumbers.size + 1;
+      referenceNumbers.set(id, number);
+      children.push(' ', link(`[${number}]`, hackerNewsUrl(id)));
+    }
+    nodes.push({ tag: 'p', children });
   }
 
   const generatedAt = new Date(draft.generatedAt).toLocaleString('zh-CN', {
@@ -106,7 +98,7 @@ export function renderTelegraphPage(draft: Draft): TelegraphNode[] {
   });
   nodes.push(
     paragraph(
-      `基于 ${draft.comments.length}/${draft.commentCount} 条评论整理 · ${generatedAt}（北京时间） · AI 生成，请结合原文核对。`,
+      `本次读取 ${draft.comments.length} 条评论 · ${generatedAt}（北京时间） · AI 生成，请结合原文核对。`,
     ),
     { tag: 'hr' },
     { tag: 'p', children: ['原文：', link(originalUrl(draft), originalUrl(draft))] },

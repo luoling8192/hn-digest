@@ -1,10 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import type { DigestDependencies, Runtime } from '../src/application/digest-service.js';
+import { DigestService } from '../src/application/digest-service.js';
 import type { Config } from '../src/config.js';
 import { configSchema } from '../src/config.js';
 import type { Draft, HackerNewsItem, Summary } from '../src/domain.js';
-import type { DigestDependencies, Runtime } from '../src/application/digest-service.js';
-import { DigestService } from '../src/application/digest-service.js';
 import { silentLogger } from '../src/logger.js';
 import { SqlitePublicationRepository } from '../src/storage/sqlite-publication-repository.js';
 
@@ -28,13 +28,12 @@ export const story: HackerNewsItem = {
 };
 
 export const summary: Summary = {
+  format: 'narrative-v1',
   title: '中文 & <标题>',
   tags: ['AI', '编程语言'],
   quickTake: '一句话 <结论>',
-  whyItMatters: ['解决具体问题', '展示新的方向'],
-  introduction: '摘要导语',
   article: [{ heading: '背景', paragraphs: ['主要内容'] }],
-  discussion: [{ heading: '不同看法', text: '用户补充', commentIds: [124] }],
+  discussion: [{ text: '用户补充', commentIds: [124] }],
 };
 
 export const draft: Draft = {

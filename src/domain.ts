@@ -78,9 +78,15 @@ export const tagSchema = z
 
 const persistedTagSchema = z.string().min(1).max(24);
 
-export const summarySchema = legacySummarySchema.extend({
+export const summarySchema = z.object({
+  format: z.literal('narrative-v1'),
+  title: z.string().min(1).max(180),
   tags: z.array(tagSchema).max(2),
-  ...scanCardFields,
+  quickTake: scanCardFields.quickTake,
+  article: z
+    .array(articleSectionSchema.extend({ heading: z.string().min(1).max(80).nullable() }))
+    .max(12),
+  discussion: z.array(discussionSectionSchema.omit({ heading: true })).max(12),
 });
 
 const persistedScanCardSummarySchema = legacySummarySchema.extend({
@@ -165,8 +171,10 @@ export type TelegraphNode =
       children?: TelegraphNode[];
     };
 
-export function isScanCardSummary(summary: PersistedSummary): summary is Summary {
-  return persistedScanCardSummarySchema.safeParse(summary).success;
+export function isScanCardSummary(
+  summary: PersistedSummary,
+): summary is Extract<PersistedSummary, { quickTake: string }> {
+  return 'quickTake' in summary && 'tags' in summary;
 }
 
 export function isReusableTag(tag: string): boolean {

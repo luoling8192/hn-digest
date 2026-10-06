@@ -56,7 +56,7 @@ test('OpenRouter summaries retain supplied comment evidence in the resulting dra
     missingParentIds: [],
   });
   assert.match(request.messages[0].content, /Tags are search handles, not broad categories/);
-  assert.match(request.messages[0].content, /Never write raw comment IDs/);
+  assert.match(request.messages[0].content, /Do not write citation numbers, raw IDs/);
 });
 
 test('discussion evidence distinguishes submitters and exposes missing reply context', async () => {
@@ -156,7 +156,7 @@ test('empty model content cannot become a successful summary', async () => {
 test('OpenRouter summaries cannot cite comments that were not supplied', async () => {
   const forgedSummary: Summary = {
     ...summary,
-    discussion: [{ heading: '伪造引用', text: '不存在的评论', commentIds: [999] }],
+    discussion: [{ text: '不存在的评论', commentIds: [999] }],
   };
   const http: JsonHttpClient = { request: async () => completion(forgedSummary) };
   const summarizer = new OpenRouterSummarizer(config, http, silentLogger);
@@ -170,7 +170,7 @@ test('OpenRouter summaries cannot cite comments that were not supplied', async (
 test('OpenRouter summaries cannot embed raw comment IDs in prose', async () => {
   const summaryWithRawId: Summary = {
     ...summary,
-    discussion: [{ heading: '直接引用', text: '评论 124 提出了修正', commentIds: [124] }],
+    discussion: [{ text: '评论 124 提出了修正', commentIds: [124] }],
   };
   const http: JsonHttpClient = { request: async () => completion(summaryWithRawId) };
   const summarizer = new OpenRouterSummarizer(config, http, silentLogger);
@@ -184,7 +184,7 @@ test('OpenRouter summaries cannot embed raw comment IDs in prose', async () => {
 test('OpenRouter summaries cannot infer consensus from an unranked sample', async () => {
   const summaryWithConsensus: Summary = {
     ...summary,
-    discussion: [{ heading: '过度概括', text: '大多数评论者都支持这一方案', commentIds: [124] }],
+    discussion: [{ text: '大多数评论者都支持这一方案', commentIds: [124] }],
   };
   const http: JsonHttpClient = { request: async () => completion(summaryWithConsensus) };
   const summarizer = new OpenRouterSummarizer(config, http, silentLogger);
@@ -215,7 +215,7 @@ test('OpenRouter summaries cannot invent article sections when extraction failed
 test('channel summaries repair unsupported consensus by default once without relaxing evidence checks', async () => {
   const invalid: Summary = {
     ...summary,
-    discussion: [{ heading: '过度概括', text: '大多数评论者都支持这一方案', commentIds: [124] }],
+    discussion: [{ text: '大多数评论者都支持这一方案', commentIds: [124] }],
   };
   const requests: string[] = [];
   const summarizer = new OpenRouterSummarizer(
@@ -233,8 +233,9 @@ test('channel summaries repair unsupported consensus by default once without rel
   assert.equal(requests.length, 2);
   assert.deepEqual(result.summary, summary);
   const correction = JSON.parse(requests[1] ?? '').messages;
-  assert.match(correction[3].content, /unsupported comment consensus/);
-  assert.deepEqual(JSON.parse(correction[2].content), invalid);
+  assert.match(correction.at(-1).content, /unsupported comment consensus/);
+  assert.equal(correction.at(-2).role, 'assistant');
+  assert.deepEqual(JSON.parse(correction.at(-2).content), invalid);
 
   let invalidCalls = 0;
   const rejections: LogFields[] = [];
