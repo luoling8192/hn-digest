@@ -9,6 +9,7 @@ export const configSchema = z.object({
   READING_ARCHIVE_TARGET: positiveInteger(300),
   OPENROUTER_API_KEY: z.string().min(20),
   OPENROUTER_MODEL: z.string().default('google/gemini-2.5-flash'),
+  OPENROUTER_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1_000).max(64_000).default(12_000),
   TELEGRAPH_ACCESS_TOKEN: z.string().min(10),
   CHANNEL_NAME: z.string().max(128).default('Hacker News 摘要'),
   CHANNEL_URL: z.url().optional(),

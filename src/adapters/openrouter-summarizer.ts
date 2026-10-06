@@ -2,9 +2,9 @@ import { z } from 'zod';
 import type { Config } from '../config.js';
 import type { Article, Comment, Draft, HackerNewsItem, Summary, TagFrequency } from '../domain.js';
 import { summarySchema } from '../domain.js';
+import { ApplicationError } from '../errors.js';
 import type { JsonHttpClient } from '../http-client.js';
 import type { Logger } from '../logger.js';
-import { ApplicationError } from '../errors.js';
 import { hashComments } from './hacker-news.js';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -22,7 +22,7 @@ const completionSchema = z.object({
   choices: z
     .array(
       z.object({
-        message: z.object({ content: z.string() }),
+        message: z.object({ content: z.string().nullable() }),
         finish_reason: z.string().nullable(),
       }),
     )
@@ -31,6 +31,7 @@ const completionSchema = z.object({
     .object({
       prompt_tokens: z.number(),
       completion_tokens: z.number(),
+      completion_tokens_details: z.object({ reasoning_tokens: z.number().optional() }).optional(),
     })
     .optional(),
 });
@@ -42,11 +43,20 @@ Tags are search handles, not broad categories. Choose 0-2 concise tags that a re
 
 The quickTake and whyItMatters fields are additive and must not shorten the full article summary. The introduction must frame the article without repeating the first article section. Use 2-5 article sections and 2-5 discussion topics when supported, approximately 700-1400 Chinese characters for introduction, article, and discussion.
 
+Read parent relationships before synthesizing discussion. Group a claim, its rebuttal, and any clarification into the same topic; cite the supplied comments supporting BOTH sides, including the response itself. Prioritize concrete corrections, limitations, firsthand experience, and responses that change the interpretation of the article. Explain what remains unresolved. Do not invent an opposing view to fill a template or pad sparse discussion to a target topic count. Topic headings must describe the specific issue, not generic labels like 热烈讨论 or 网友观点. Explain unfamiliar technical terms briefly when needed.
+
+When a supplied comment contains an author or company response, summarize its actual explanation, claimed fix, and remaining uncertainty in an early topic. Merely mentioning that a response or screenshot exists is not enough. Attribute a repost or translation as 评论中转述的回应, not as a directly verified statement. Keep each topic to 2-4 focused sentences. Omit tangents and repeated reactions before dropping a consequential response. Every factual assertion about the discussion must be supported by that topic's cited comments; if more than five citations would be needed, narrow the topic instead of appending uncited claims.
+
+The story submitter is not necessarily the article author or a company representative. Only attribute those roles when the supplied material explicitly supports them; describe an unverified self-identification as 自称. A reply's missing parent is unavailable context, not evidence: do not reconstruct its claims. discussionCoverage describes a bounded sample, not all views or their popularity. Keep source claims, commenter experience, speculation, and established facts distinct. Citations must support the adjacent synthesis, not merely be valid IDs.
+
 For discussion, synthesize the central disagreement, corrections, practical experience, and any supplied author, project, or company response. Explain how evidence changes or qualifies the article instead of listing commenters one by one. Comment samples are bounded and scores are unavailable: use 部分评论者 / 有评论指出, never 许多评论者 / 普遍 / 大多数 / 多数人 / 主流意见 / 一致认为 / 整体共识. Every discussion topic MUST cite 1-5 actual supplied comment IDs in commentIds. Never write raw comment IDs or generated URLs inside discussion text. Do not cite IDs from the story or outside the supplied comments. If no comments are supplied, discussion must be empty. If article.source is unavailable, introduction MUST explain that the article could not be retrieved, article MUST be empty, and discussion must describe only supplied comments. For short HN text, use fewer sections instead of padding.`;
 
 export class OpenRouterSummarizer {
   constructor(
-    private readonly config: Pick<Config, 'OPENROUTER_API_KEY' | 'OPENROUTER_MODEL'>,
+    private readonly config: Pick<
+      Config,
+      'OPENROUTER_API_KEY' | 'OPENROUTER_MODEL' | 'OPENROUTER_MAX_OUTPUT_TOKENS'
+    >,
     private readonly http: JsonHttpClient,
     private readonly logger: Logger,
     private readonly now: () => Date = () => new Date(),
@@ -75,6 +85,7 @@ export class OpenRouterSummarizer {
     tagCatalog: readonly TagFrequency[],
     correction?: SummaryEvidenceError,
   ): Promise<Draft> {
+    const suppliedIds = new Set(comments.map((comment) => comment.id));
     const raw = await this.http.request(
       OPENROUTER_URL,
       'openrouter',
@@ -88,7 +99,8 @@ export class OpenRouterSummarizer {
         body: JSON.stringify({
           model: this.config.OPENROUTER_MODEL,
           temperature: 0.3,
-          max_tokens: 6_000,
+          max_tokens: this.config.OPENROUTER_MAX_OUTPUT_TOKENS,
+          reasoning: { enabled: false },
           response_format: {
             type: 'json_schema',
             json_schema: {
@@ -102,7 +114,21 @@ export class OpenRouterSummarizer {
             {
               role: 'user',
               content: JSON.stringify({
-                story: { id: story.id, title: story.title, author: story.by },
+                story: { id: story.id, title: story.title, submitter: story.by },
+                discussionCoverage: {
+                  suppliedComments: comments.length,
+                  reportedComments: story.descendants ?? null,
+                  missingParentIds: [
+                    ...new Set(
+                      comments
+                        .filter(
+                          (comment) =>
+                            comment.parent !== story.id && !suppliedIds.has(comment.parent),
+                        )
+                        .map((comment) => comment.parent),
+                    ),
+                  ],
+                },
                 tagCatalog,
                 article,
                 comments,
@@ -126,7 +152,21 @@ export class OpenRouterSummarizer {
     const response = completionSchema.parse(raw);
     const [choice] = response.choices;
     if (!choice) throw new Error('OpenRouter returned no summary choice');
-    if (choice.finish_reason === 'length') throw new Error('Summary exceeded output limit');
+    this.logger.info('summary_completion', {
+      storyId: story.id,
+      model: this.config.OPENROUTER_MODEL,
+      finishReason: choice.finish_reason,
+      truncated: choice.finish_reason === 'length',
+      maxOutputTokens: this.config.OPENROUTER_MAX_OUTPUT_TOKENS,
+      inputTokens: response.usage?.prompt_tokens ?? null,
+      outputTokens: response.usage?.completion_tokens ?? null,
+      reasoningTokens: response.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+      correction: correction !== undefined,
+    });
+    if (choice.finish_reason === 'length') {
+      throw new ApplicationError('summary_output_truncated', 502, 'Summary exceeded output limit');
+    }
+    if (!choice.message.content) throw new Error('OpenRouter returned no summary content');
 
     const summary = parseSummary(choice.message.content);
     try {

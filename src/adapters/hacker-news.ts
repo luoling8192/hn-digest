@@ -71,27 +71,35 @@ export async function collectComments(
   const maxCharacters = options.maxCharacters ?? 48_000;
   const maxCommentCharacters = options.maxCommentCharacters ?? 2_500;
   const queue = [...story.kids];
+  const replies: number[] = [];
   const seen = new Set<number>();
   const comments: Comment[] = [];
   let characters = 0;
   let scanned = 0;
 
   while (
-    queue.length > 0 &&
+    (queue.length > 0 || replies.length > 0) &&
     comments.length < limit &&
     characters < maxCharacters &&
     scanned < limit * 3
   ) {
-    const batch = queue
-      .splice(0, Math.min(8, limit - comments.length))
-      .filter((id) => !seen.has(id));
-    for (const id of batch) seen.add(id);
+    const batch: number[] = [];
+    const batchLimit = Math.min(8, limit - comments.length, limit * 3 - scanned);
+    while (batch.length < batchLimit && (queue.length > 0 || replies.length > 0)) {
+      const pending =
+        replies.length > 0 && (queue.length === 0 || batch.length % 2 === 1) ? replies : queue;
+      const id = pending.shift();
+      if (id === undefined || seen.has(id)) continue;
+      seen.add(id);
+      batch.push(id);
+    }
     scanned += batch.length;
 
     const items = await Promise.all(batch.map(fetchItem));
+    const nextReplies: number[] = [];
     for (const item of items) {
       if (!item) continue;
-      queue.push(...item.kids);
+      nextReplies.push(...item.kids);
       if (item.deleted || item.dead || !item.text || item.parent === undefined || !item.by)
         continue;
 
@@ -102,6 +110,7 @@ export async function collectComments(
       comments.push({ id: item.id, parent: item.parent, author: item.by, text });
       characters += text.length;
     }
+    replies.unshift(...nextReplies);
   }
 
   return comments;

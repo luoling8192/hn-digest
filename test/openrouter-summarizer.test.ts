@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { OpenRouterSummarizer } from '../src/adapters/openrouter-summarizer.js';
 import type { Summary } from '../src/domain.js';
+import { ApplicationError } from '../src/errors.js';
 import type { JsonHttpClient } from '../src/http-client.js';
 import { type LogFields, silentLogger } from '../src/logger.js';
 import { config, draft, story, summary } from './fixtures.js';
@@ -45,10 +46,111 @@ test('OpenRouter summaries retain supplied comment evidence in the resulting dra
   assert.deepEqual(result.comments, draft.comments);
   assert.equal(result.commentCount, story.descendants);
   const request = JSON.parse(requestBody);
+  assert.equal(request.max_tokens, 12_000);
+  assert.deepEqual(request.reasoning, { enabled: false });
   const userPayload = JSON.parse(request.messages[1].content);
   assert.deepEqual(userPayload.tagCatalog, tagCatalog);
+  assert.deepEqual(userPayload.discussionCoverage, {
+    suppliedComments: 1,
+    reportedComments: 10,
+    missingParentIds: [],
+  });
   assert.match(request.messages[0].content, /Tags are search handles, not broad categories/);
   assert.match(request.messages[0].content, /Never write raw comment IDs/);
+});
+
+test('discussion evidence distinguishes submitters and exposes missing reply context', async () => {
+  let payload: Record<string, unknown> = {};
+  const comments = [
+    ...draft.comments,
+    { id: 125, parent: 999, author: 'submitter', text: 'I disagree with the missing context' },
+    { id: 126, parent: 999, author: 'reader', text: 'Another reply' },
+  ];
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async (_url, _service, init) => {
+        const request = JSON.parse(String(init?.body));
+        payload = JSON.parse(request.messages[1].content);
+        return completion(summary);
+      },
+    },
+    silentLogger,
+  );
+  const result = await summarizer.summarize(
+    { ...story, by: 'submitter' },
+    draft.article,
+    comments,
+    [],
+  );
+  assert.deepEqual(payload.story, { id: story.id, title: story.title, submitter: 'submitter' });
+  assert.deepEqual(payload.discussionCoverage, {
+    suppliedComments: 3,
+    reportedComments: 10,
+    missingParentIds: [999],
+  });
+  assert.deepEqual(result.comments, comments);
+});
+
+test('reasoning-only truncation reports the output limit without attempting evidence repair', async () => {
+  let calls = 0;
+  const events: LogFields[] = [];
+  const summarizer = new OpenRouterSummarizer(
+    { ...config, OPENROUTER_MAX_OUTPUT_TOKENS: 16_000 },
+    {
+      request: async (_url, _service, init) => {
+        assert.equal(JSON.parse(String(init?.body)).max_tokens, 16_000);
+        calls++;
+        return {
+          choices: [{ message: { content: null }, finish_reason: 'length' }],
+          usage: {
+            prompt_tokens: 500,
+            completion_tokens: 16_000,
+            completion_tokens_details: { reasoning_tokens: 16_000 },
+          },
+        };
+      },
+    },
+    {
+      ...silentLogger,
+      info: (event, fields) => {
+        if (event === 'summary_completion' && fields) events.push(fields);
+      },
+    },
+  );
+  await assert.rejects(
+    summarizer.summarize(story, draft.article, draft.comments, []),
+    (error: unknown) =>
+      error instanceof ApplicationError && error.code === 'summary_output_truncated',
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(events, [
+    {
+      storyId: story.id,
+      model: config.OPENROUTER_MODEL,
+      finishReason: 'length',
+      truncated: true,
+      maxOutputTokens: 16_000,
+      inputTokens: 500,
+      outputTokens: 16_000,
+      reasoningTokens: 16_000,
+      correction: false,
+    },
+  ]);
+});
+
+test('empty model content cannot become a successful summary', async () => {
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => ({ choices: [{ message: { content: null }, finish_reason: 'stop' }] }),
+    },
+    silentLogger,
+  );
+  await assert.rejects(
+    summarizer.summarize(story, draft.article, draft.comments, []),
+    /no summary content/,
+  );
 });
 
 test('OpenRouter summaries cannot cite comments that were not supplied', async () => {

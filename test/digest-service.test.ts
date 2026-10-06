@@ -6,6 +6,7 @@ import { DigestService } from '../src/application/digest-service.js';
 import type { Draft, TagFrequency } from '../src/domain.js';
 import { readyPublication } from '../src/domain.js';
 import {
+  ApplicationError,
   ConcurrentRunError,
   DeliveryRejectedError,
   PublicationConflictError,
@@ -13,6 +14,36 @@ import {
 import { silentLogger } from '../src/logger.js';
 import { SqlitePublicationRepository } from '../src/storage/sqlite-publication-repository.js';
 import { config, createHarness, draft, story, summary } from './fixtures.js';
+
+test('truncated summaries are recorded and retried after backoff without publishing partial content', async () => {
+  let calls = 0;
+  const harness = createHarness({
+    summarize: async () => {
+      calls++;
+      if (calls === 1)
+        throw new ApplicationError(
+          'summary_output_truncated',
+          502,
+          'Summary exceeded output limit',
+        );
+      return structuredClone(draft);
+    },
+  });
+  try {
+    assert.equal((await harness.service.runCycle()).failed, 1);
+    assert.equal(harness.sends(), 0);
+    assert.equal(harness.repository.getPublication(story.id), null);
+    assert.equal(harness.service.failures()[0]?.code, 'summary_output_truncated');
+    await harness.service.runCycle();
+    assert.equal(calls, 1);
+    harness.runtime.advance(600_000);
+    assert.equal((await harness.service.runCycle()).published, 1);
+    assert.equal(harness.sends(), 1);
+    assert.equal(harness.service.failures().length, 0);
+  } finally {
+    harness.cleanup();
+  }
+});
 
 test('published stories remain deduplicated after the database is reopened', async () => {
   const harness = createHarness();
