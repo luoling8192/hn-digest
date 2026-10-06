@@ -84,3 +84,7 @@ Dependencies enter the application service through explicit interfaces. Tests re
 Uses the official Hacker News, Telegram Bot, and Telegraph HTTP APIs, Mozilla Readability, jsdom, Zod, and undici. When static extraction yields no usable text, the public source URL is sent to Jina Reader for browser rendering; article contents are never replaced with generated text. The earlier `hacker-news-worker` research informed the scope, but its Cloudflare-specific delivery implementation was not copied: Railway persistence and recoverable delivery need different state handling.
 
 See [live acceptance](docs/acceptance.md) for the deployment and verification evidence.
+
+## License
+
+Licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE) for the full terms. Third-party dependencies retain their respective licenses.
