@@ -134,7 +134,8 @@ export class OpenRouterReadingAssistant implements ReadingAssistant {
         headers: {
           authorization: `Bearer ${this.config.OPENROUTER_API_KEY}`,
           'content-type': 'application/json',
-          'X-Title': 'HN Digest Reading',
+          'HTTP-Referer': 'https://github.com/luoling8192/hn-digest',
+          'X-OpenRouter-Title': 'HN Digest',
         },
         body: JSON.stringify({
           model: this.config.OPENROUTER_MODEL,
