@@ -27,6 +27,7 @@ export const articleSchema = z.object({
   text: z.string(),
   source: z.enum(['article', 'hn-text', 'unavailable']),
   readingMinutes: z.number().int().positive().nullable(),
+  failureCode: z.string().min(1).max(80).optional(),
 });
 
 const articleSectionSchema = z.object({
