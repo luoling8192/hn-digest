@@ -12,6 +12,7 @@ export const config: Config = configSchema.parse({
   TELEGRAM_BOT_TOKEN: 'test-token-not-a-real-token',
   TELEGRAM_CHAT_ID: '-100123456789',
   OPENROUTER_API_KEY: 'test-key-not-a-real-key',
+  FIRECRAWL_API_KEY: 'test-firecrawl-not-a-real-key',
   TELEGRAPH_ACCESS_TOKEN: 'test-telegraph',
   ADMIN_TOKEN: 'x'.repeat(32),
 });

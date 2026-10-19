@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type { Config } from '../config.js';
 import type {
   Article,
@@ -11,12 +12,14 @@ import type {
   TagFrequency,
 } from '../domain.js';
 import {
+  articleSchema,
   cycleResultSchema,
   isReusableTag,
   isScanCardSummary,
   readyPublication,
 } from '../domain.js';
 import {
+  ApplicationError,
   ConcurrentRunError,
   DeliveryRejectedError,
   PublicationConflictError,
@@ -36,6 +39,28 @@ const DISCUSSION_REFRESH_INTERVAL_MS = 3_600_000;
 const DISCUSSION_SETTLE_INTERVAL_MS = 12 * 3_600_000;
 const DISCUSSION_GROWTH_RATIO = 0.2;
 const TAG_EXAMPLE_LIMIT = 2;
+const ARTICLE_RECOVERY_LIMIT = 3;
+const ARTICLE_RECOVERY_RETRY_MS = 600_000;
+const articleRecoverySchema = z.object({
+  attempts: z.number().int().nonnegative(),
+  lastAttempt: z.number().nonnegative(),
+  nextRetry: z.number().nonnegative(),
+  article: articleSchema.nullable(),
+  lastError: z.string().nullable().default(null),
+});
+type ArticleRecovery = z.infer<typeof articleRecoverySchema>;
+
+function recoveryKey(id: number): string {
+  return `article_recovery:${id}`;
+}
+
+function articleHost(publication: Publication): string {
+  try {
+    return new URL(publication.draft.story.url ?? 'https://news.ycombinator.com').hostname;
+  } catch {
+    return 'invalid-url';
+  }
+}
 
 export interface DigestDependencies {
   getTopStories(): Promise<HackerNewsItem[]>;
@@ -106,6 +131,24 @@ export class DigestService {
 
   failures() {
     return this.repository.listFailures();
+  }
+
+  articleRecoveries() {
+    return this.repository.listPublications().flatMap((publication) => {
+      if (publication.state !== 'published') return [];
+      const stored = this.repository.getSetting(recoveryKey(publication.id));
+      if (!stored && publication.draft.article.source !== 'unavailable') return [];
+      const state = stored ? articleRecoverySchema.parse(JSON.parse(stored)) : null;
+      return [
+        {
+          id: publication.id,
+          attempts: state?.attempts ?? 0,
+          nextRetry: state?.nextRetry ?? 0,
+          code: state?.lastError ?? null,
+          phase: publication.draft.article.source === 'unavailable' ? 'source' : 'message',
+        },
+      ];
+    });
   }
 
   async preview(id: number, regenerate = false): Promise<Draft> {
@@ -183,6 +226,9 @@ export class DigestService {
         }
       }
 
+      const recovery = await this.recoverArticles();
+      result.updated += recovery.updated;
+      result.failed += recovery.failed;
       const now = this.runtime.now();
       const recent = this.repository
         .listPublications()
@@ -194,6 +240,7 @@ export class DigestService {
         );
 
       for (const publication of recent) {
+        if (recovery.handled.has(publication.id)) continue;
         if (!this.repository.retryAllowed(publication.id, this.runtime.now())) continue;
         try {
           const story =
@@ -310,12 +357,134 @@ export class DigestService {
     };
     this.repository.savePublication(published);
     this.repository.clearFailure(published.id);
+    if (published.draft.article.source === 'unavailable') {
+      this.repository.setSetting(
+        recoveryKey(published.id),
+        JSON.stringify({
+          attempts: 0,
+          lastAttempt: now,
+          nextRetry: now + ARTICLE_RECOVERY_RETRY_MS,
+          article: null,
+          lastError: null,
+        } satisfies ArticleRecovery),
+      );
+    }
     this.logger.info('published', {
       storyId: published.id,
       messageId,
       page: page.url,
     });
     return published;
+  }
+
+  private async recoverArticles(): Promise<{
+    updated: number;
+    failed: number;
+    handled: Set<number>;
+  }> {
+    const result = { updated: 0, failed: 0, handled: new Set<number>() };
+    const now = this.runtime.now();
+    const candidates: { publication: Publication; state: ArticleRecovery }[] = [];
+    for (const publication of this.repository.listPublications()) {
+      if (publication.state !== 'published' || !publication.page || publication.messageId === null)
+        continue;
+      const stored = this.repository.getSetting(recoveryKey(publication.id));
+      if (publication.draft.article.source !== 'unavailable' && !stored) continue;
+      const state = stored
+        ? articleRecoverySchema.parse(JSON.parse(stored))
+        : { attempts: 0, lastAttempt: 0, nextRetry: 0, article: null, lastError: null };
+      // An unfinished Telegram edit must retain this independent recovery backoff.
+      if (publication.draft.article.source !== 'unavailable') result.handled.add(publication.id);
+      if (state.nextRetry <= now) candidates.push({ publication, state });
+    }
+    candidates.sort(
+      (left, right) =>
+        left.state.lastAttempt - right.state.lastAttempt ||
+        left.publication.id - right.publication.id,
+    );
+    const selected: typeof candidates = [];
+    const hosts = new Set<string>();
+    for (const candidate of candidates) {
+      const host = articleHost(candidate.publication);
+      if (hosts.has(host)) continue;
+      hosts.add(host);
+      selected.push(candidate);
+      if (selected.length === ARTICLE_RECOVERY_LIMIT) break;
+    }
+    for (const candidate of candidates) {
+      if (selected.length === ARTICLE_RECOVERY_LIMIT) break;
+      if (!selected.includes(candidate)) selected.push(candidate);
+    }
+
+    for (const { publication, state: previous } of selected) {
+      result.handled.add(publication.id);
+      const attempts = previous.attempts + 1;
+      let state: ArticleRecovery = {
+        ...previous,
+        attempts,
+        lastAttempt: this.runtime.now(),
+        nextRetry:
+          this.runtime.now() +
+          Math.min(6 * 3_600_000, ARTICLE_RECOVERY_RETRY_MS * 2 ** Math.min(attempts - 1, 6)),
+      };
+      // Persist before remote work so an interrupted worker also respects backoff.
+      this.repository.setSetting(recoveryKey(publication.id), JSON.stringify(state));
+      let phase = 'extract';
+      try {
+        let current = publication;
+        if (current.draft.article.source === 'unavailable') {
+          const article =
+            state.article ?? (await this.dependencies.extractArticle(current.draft.story));
+          if (article.source === 'unavailable')
+            throw new ApplicationError(
+              article.failureCode ?? 'article_recovery_unavailable',
+              502,
+              'Article remains unavailable',
+            );
+          state = { ...state, article };
+          this.repository.setSetting(recoveryKey(publication.id), JSON.stringify(state));
+          phase = 'summarize';
+          const draft = await this.dependencies.summarize(
+            current.draft.story,
+            article,
+            current.draft.comments,
+            this.tagCatalog(),
+          );
+          phase = 'save_page';
+          const page = await this.dependencies.savePage(draft, current.page);
+          current = { ...current, draft, page, updatedAt: this.runtime.now() };
+          this.repository.savePublication(current);
+        }
+        const page = current.page;
+        const messageId = current.messageId;
+        if (!page || messageId === null)
+          throw new Error('Published delivery identifiers are missing');
+        phase = 'edit_message';
+        const messageHash = telegramMessageHash(current.draft, page.url);
+        if (messageHash !== current.messageHash) {
+          await this.dependencies.editMessage(current.draft, page, messageId);
+          this.repository.savePublication({ ...current, messageHash });
+        }
+        this.repository.setSetting(recoveryKey(publication.id), '');
+        this.repository.clearFailure(publication.id);
+        result.updated += 1;
+        this.logger.info('article_recovered', { storyId: publication.id, attempts });
+      } catch (error) {
+        this.repository.setSetting(
+          recoveryKey(publication.id),
+          JSON.stringify({ ...state, lastError: errorCode(error) }),
+        );
+        result.failed += 1;
+        this.logger.warn('article_recovery_failed', {
+          storyId: publication.id,
+          phase,
+          code: errorCode(error),
+          attempts,
+          nextRetry: state.nextRetry,
+        });
+      }
+    }
+    return result;
   }
 
   private async refresh(publication: Publication, story: HackerNewsItem): Promise<void> {

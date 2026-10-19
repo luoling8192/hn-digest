@@ -21,7 +21,6 @@
     "verify": "npm run format:check && npm run lint && npm run check && npm test && npm run build"
   },
   "dependencies": {
-    "@mozilla/readability": "^0.6.0",
     "ipaddr.js": "^2.2.0",
     "jsdom": "^26.1.0",
     "undici": "^7.16.0",

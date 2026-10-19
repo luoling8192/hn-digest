@@ -1,6 +1,4 @@
 import { lookup } from 'node:dns';
-import { Readability } from '@mozilla/readability';
-import { JSDOM } from 'jsdom';
 import ipaddr from 'ipaddr.js';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
@@ -8,17 +6,25 @@ import type { Article, HackerNewsItem } from '../domain.js';
 import { ApplicationError, errorCode, RemoteHttpError } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { htmlToPlainText } from './hacker-news.js';
+import {
+  looksLikeChallengePage,
+  withoutMediumResponses,
+  withoutReutersFooter,
+} from './article-quality.js';
 
-const MAX_REDIRECTS = 5;
 const MAX_DOWNLOAD_BYTES = 3_000_000;
 const MAX_SUMMARY_CHARACTERS = 45_000;
 const MIN_ARTICLE_CHARACTERS = 200;
-const READER_BASE_URL = 'https://r.jina.ai/';
+const FIRECRAWL_URL = 'https://api.firecrawl.dev/v2/scrape';
 
 type Fetcher = (
   input: string | URL,
   init?: Parameters<typeof undiciFetch>[1],
 ) => ReturnType<typeof undiciFetch>;
+
+interface ExtractionRuntime {
+  now(): number;
+}
 
 export function isPublicAddress(address: string): boolean {
   try {
@@ -69,10 +75,13 @@ const publicNetworkDispatcher = new Agent({
 });
 
 export class ArticleExtractor {
+  private retryAt = 0;
+
   constructor(
     private readonly logger: Logger,
+    private readonly apiKey: string,
     private readonly fetcher: Fetcher = undiciFetch,
-    private readonly jinaApiKey?: string,
+    private readonly runtime: ExtractionRuntime = { now: Date.now },
   ) {}
 
   async extract(story: HackerNewsItem): Promise<Article> {
@@ -88,124 +97,111 @@ export class ArticleExtractor {
     let url: URL;
     try {
       url = parsePublicHttpUrl(story.url);
+      url.hash = '';
     } catch {
       this.logger.warn('article_unavailable', { storyId: story.id, code: 'unsafe_article_url' });
-      return { text: '', source: 'unavailable', readingMinutes: null };
+      return {
+        text: '',
+        source: 'unavailable',
+        readingMinutes: null,
+        failureCode: 'unsafe_article_url',
+      };
     }
-    for (const method of ['jina', 'direct'] as const) {
-      const startedAt = Date.now();
-      const fields = { storyId: story.id, host: url.hostname, method };
-      this.logger.info('article_fetch_started', fields);
-      try {
-        const article =
-          method === 'jina'
-            ? articleFromText(await this.extractRendered(url, story.id))
-            : await this.extractRemote(url.href, story.id);
-        this.logger.info('article_fetch_succeeded', {
-          ...fields,
-          durationMs: Date.now() - startedAt,
-          characters: article.text.length,
-        });
-        return article;
-      } catch (error) {
-        this.logger.warn('article_fetch_failed', {
-          ...fields,
-          durationMs: Date.now() - startedAt,
-          code: articleErrorCode(error),
-          status: error instanceof RemoteHttpError ? error.status : undefined,
-        });
-      }
+    const startedAt = Date.now();
+    const fields = { storyId: story.id, host: url.hostname, method: 'firecrawl' };
+    this.logger.info('article_fetch_started', fields);
+    try {
+      const text = await this.scrape(url, story.id);
+      const article = articleFromText(text);
+      this.logger.info('article_fetch_succeeded', {
+        ...fields,
+        durationMs: Date.now() - startedAt,
+        characters: article.text.length,
+        sourceCharacters: text.length,
+        truncated: text.length > MAX_SUMMARY_CHARACTERS,
+      });
+      return article;
+    } catch (error) {
+      const failureCode = articleErrorCode(error);
+      this.logger.warn('article_fetch_failed', {
+        ...fields,
+        durationMs: Date.now() - startedAt,
+        code: failureCode,
+        status: error instanceof RemoteHttpError ? error.status : undefined,
+        retryAfterSeconds: error instanceof RemoteHttpError ? error.retryAfterSeconds : undefined,
+      });
+      this.logger.warn('article_unavailable', { storyId: story.id, code: failureCode });
+      return { text: '', source: 'unavailable', readingMinutes: null, failureCode };
     }
-    this.logger.warn('article_unavailable', {
-      storyId: story.id,
-      code: 'all_fetch_methods_failed',
-    });
-    return { text: '', source: 'unavailable', readingMinutes: null };
   }
 
-  private async extractRemote(rawUrl: string, storyId: number): Promise<Article> {
-    let url = parsePublicHttpUrl(rawUrl);
-
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      const response = await this.fetcher(url, {
-        dispatcher: publicNetworkDispatcher,
-        redirect: 'manual',
-        signal: AbortSignal.timeout(20_000),
-        headers: {
-          'user-agent': 'HNDigest/2.0 (article summarizer)',
-          accept: 'text/html,text/plain',
-        },
-      });
-      this.logger.info('article_fetch_response', {
-        storyId,
-        method: 'direct',
-        status: response.status,
-        contentType: response.headers.get('content-type'),
-      });
-
-      if (response.status >= 300 && response.status < 400) {
-        await response.body?.cancel();
-        const location = response.headers.get('location');
-        if (!location)
-          throw new ApplicationError('article_redirect_missing', 502, 'Missing redirect');
-        url = parsePublicHttpUrl(new URL(location, url).href);
-        continue;
-      }
-
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new RemoteHttpError('article', response.status);
-      }
-
-      const contentType = response.headers.get('content-type') ?? '';
-      if (!/text\/html|text\/plain|application\/xhtml/.test(contentType)) {
-        await response.body?.cancel();
-        throw new ApplicationError('article_type_unsupported', 502, 'Unsupported article type');
-      }
-
-      const raw = await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
-      const text = contentType.includes('text/plain') ? raw.trim() : readableText(raw, url);
-      validateArticleText(text);
-      return articleFromText(text);
+  private async scrape(url: URL, storyId: number): Promise<string> {
+    if (this.retryAt > this.runtime.now()) {
+      throw new RemoteHttpError(
+        'firecrawl',
+        429,
+        Math.ceil((this.retryAt - this.runtime.now()) / 1000),
+      );
     }
-
-    throw new ApplicationError('article_redirect_limit', 502, 'Too many article redirects');
-  }
-
-  private async extractRendered(url: URL, storyId: number): Promise<string> {
-    const target = new URL(url);
-    target.hash = '';
-    const readerUrl = new URL(`${READER_BASE_URL}${target.href}`);
-    const response = await this.fetcher(readerUrl, {
+    const response = await this.fetcher(FIRECRAWL_URL, {
       dispatcher: publicNetworkDispatcher,
+      method: 'POST',
       redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
-      headers: {
-        'user-agent': 'HNDigest/2.0 (article summarizer)',
-        accept: 'application/json',
-        ...(this.jinaApiKey ? { authorization: `Bearer ${this.jinaApiKey}` } : {}),
-        'x-timeout': '20',
-      },
+      signal: AbortSignal.timeout(75_000),
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        url: url.href,
+        formats: ['markdown'],
+        onlyMainContent: true,
+        proxy: 'auto',
+        waitFor: 1_500,
+        maxAge: 0,
+        timeout: 60_000,
+      }),
     });
     this.logger.info('article_fetch_response', {
       storyId,
-      method: 'jina',
+      method: 'firecrawl',
       status: response.status,
       contentType: response.headers.get('content-type'),
     });
-
     if (!response.ok) {
+      const retryAfter = retryAfterSeconds(response, this.runtime.now());
       await response.body?.cancel();
-      throw new RemoteHttpError('jina', response.status);
+      if (response.status === 429)
+        this.retryAt = Math.max(this.retryAt, this.runtime.now() + (retryAfter ?? 60) * 1000);
+      throw new RemoteHttpError('firecrawl', response.status, retryAfter);
     }
-
     const raw = await readLimitedBody(response, MAX_DOWNLOAD_BYTES);
     const result = z
-      .object({ data: z.object({ content: z.string(), title: z.string().optional() }) })
-      .parse(JSON.parse(raw));
-    validateArticleText(result.data.content, result.data.title);
-    return result.data.content;
+      .object({
+        success: z.literal(true),
+        data: z.object({
+          markdown: z.string(),
+          metadata: z.object({ statusCode: z.number().int(), title: z.string().optional() }),
+        }),
+      })
+      .parse(JSON.parse(raw.toString('utf8')));
+    const status = result.data.metadata.statusCode;
+    if ((status < 200 || status >= 300) && status !== 304)
+      throw new RemoteHttpError('article', status);
+    validateArticleText(result.data.markdown, result.data.metadata.title);
+    const text = withoutReutersFooter(withoutMediumResponses(result.data.markdown), url);
+    validateArticleText(text, result.data.metadata.title);
+    return text;
   }
+}
+
+function retryAfterSeconds(
+  response: Awaited<ReturnType<typeof undiciFetch>>,
+  now: number,
+): number | undefined {
+  const value = response.headers.get('retry-after');
+  if (value === null) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, Math.ceil((date - now) / 1000)) : undefined;
 }
 
 function articleFromText(text: string): Article {
@@ -219,7 +215,7 @@ function articleFromText(text: string): Article {
 async function readLimitedBody(
   response: Awaited<ReturnType<typeof undiciFetch>>,
   limit: number,
-): Promise<string> {
+): Promise<Buffer> {
   if (!response.body) throw new Error('Article response omitted its body');
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -236,25 +232,11 @@ async function readLimitedBody(
     chunks.push(value);
   }
 
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-function readableText(html: string, url: URL): string {
-  const dom = new JSDOM(html, { url: url.href });
-  const text = new Readability(dom.window.document).parse()?.textContent?.trim() ?? '';
-  dom.window.close();
-  return text;
+  return Buffer.concat(chunks);
 }
 
 function validateArticleText(text: string, title = ''): void {
-  if (
-    /^(just a moment|access denied|attention required|verify you are human|security checkpoint)/i.test(
-      title.trim(),
-    ) ||
-    /^(?:#\s*)?(?:just a moment|verify you are human|checking your browser|enable javascript and cookies to continue|access denied)/i.test(
-      text.trim(),
-    )
-  ) {
+  if (looksLikeChallengePage(text, title)) {
     throw new ApplicationError(
       'article_challenge_page',
       502,

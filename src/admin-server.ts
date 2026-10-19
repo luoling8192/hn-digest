@@ -77,7 +77,11 @@ async function routeAdminRequest(
         commentsSampled: publication.draft.comments.length,
         commentCount: publication.draft.commentCount,
         updates: publication.updates,
+        articleSource: publication.draft.article.source,
+        articleCharacters: publication.draft.article.text.length,
+        articleFailureCode: publication.draft.article.failureCode ?? null,
       })),
+      articleRecoveries: service.articleRecoveries(),
       failures: service.failures().map((failure) => ({
         id: failure.id,
         attempts: failure.attempts,

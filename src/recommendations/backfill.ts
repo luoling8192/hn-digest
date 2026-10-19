@@ -1,13 +1,18 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { looksLikeChallengePage } from '../adapters/article-quality.js';
 import type { Article, HackerNewsItem } from '../domain.js';
 import { errorCode } from '../errors.js';
 import type { JsonHttpClient } from '../http-client.js';
 import type { Logger } from '../logger.js';
 import type { ReadingAssistant } from './assistant.js';
 import { articleFromCandidate, inferTopics } from './catalog.js';
-import { newReader, type Candidate } from './model.js';
+import { newReader, type Candidate, type ReadingArticle } from './model.js';
 import type { ReadingStore } from './store.js';
+
+const SOURCE_RETRY_INTERVAL_MS = 6 * 3_600_000;
+const IDLE_INTERVAL_MS = 60_000;
+const INVENTORY_HEARTBEAT_MS = 3_600_000;
 
 const searchSchema = z.object({
   hits: z.array(
@@ -34,6 +39,9 @@ const stateSchema = z.object({
 export class ReadingBackfill {
   private readonly abort = new AbortController();
   private running: Promise<void> | null = null;
+  private nextStepDelay = 1500;
+  private inventoryLog: { indexed: number; parsed: number; failed: number; at: number } | null =
+    null;
   constructor(
     private readonly store: ReadingStore,
     private readonly http: JsonHttpClient,
@@ -43,6 +51,10 @@ export class ReadingBackfill {
     private readonly logger: Logger,
     private readonly target = 300,
     private readonly now: () => number = Date.now,
+    private readonly pause: (milliseconds: number, signal: AbortSignal) => Promise<void> = (
+      milliseconds,
+      signal,
+    ) => delay(milliseconds, undefined, { signal }),
   ) {}
 
   start(): void {
@@ -80,6 +92,7 @@ export class ReadingBackfill {
   async step(): Promise<boolean> {
     const state = this.state();
     if (state.month < 60) {
+      this.nextStepDelay = 1500;
       const end = new Date(state.anchor);
       end.setUTCMonth(end.getUTCMonth() - state.month);
       const start = new Date(state.anchor);
@@ -128,91 +141,113 @@ export class ReadingBackfill {
     }
     const inventory = this.store.inventory();
     const target = this.desiredTarget();
-    if (inventory.parsed < target) {
-      const candidates = this.store
-        .candidates()
-        .filter(
-          (candidate) =>
-            candidate.topics.length &&
-            (candidate.status === 'pending' ||
-              (candidate.status === 'failed' &&
-                this.now() - (candidate.attemptedAt ?? 0) > 7 * 86_400_000)),
-        );
-      const existing = new Set(this.store.articles().map((article) => article.id));
-      const topicCounts = inventory.topics;
-      candidates.sort((a, b) => {
-        const priority = (candidate: Candidate) =>
-          Math.min(...candidate.topics.map((topic) => topicCounts[topic] ?? 0));
-        return priority(a) - priority(b) || b.score - a.score;
-      });
-      const chosen = candidates
-        .filter((candidate) => !existing.has(candidate.id))
-        .slice(0, Math.min(3, target - inventory.parsed));
-      if (chosen.length) {
-        const fetched = await Promise.all(
-          chosen.map(async (candidate) => ({
-            candidate,
-            source:
-              this.store.source(candidate.id) ??
-              (await this.extractor.extract({
-                id: candidate.id,
-                type: 'story',
-                title: candidate.title,
-                url: candidate.url,
-                time: candidate.time,
-                kids: [],
-              })),
-          })),
-        );
-        await Promise.all(
-          fetched.map(async ({ candidate, source }) => {
-            if (this.abort.signal.aborted) return;
-            if (
-              source.source === 'unavailable' ||
-              source.text.length < 200 ||
-              looksBlocked(source.text)
-            ) {
-              this.store.saveCandidate({ ...candidate, status: 'failed', attemptedAt: this.now() });
-              return;
-            }
-            this.store.saveSource(candidate.id, source);
-            try {
-              const [article] = await this.assistant.annotate(
-                [articleFromCandidate(candidate, source)],
-                this.store.reader(this.ownerId) ?? newReader(this.ownerId),
-                new Map([[candidate.id, source]]),
-              );
-              if (!article) throw new Error('Missing archive article annotation');
-              this.store.transaction(() => {
-                this.store.saveArticle(article);
-                this.store.saveCandidate({
-                  ...candidate,
-                  status: 'ready',
-                  attemptedAt: this.now(),
-                });
-              });
-            } catch (error) {
-              this.logger.warn('reading_annotation_failed', {
-                storyId: candidate.id,
-                code: errorCode(error),
-              });
-              this.store.saveCandidate({ ...candidate, status: 'failed', attemptedAt: this.now() });
-            }
-          }),
-        );
-        this.store.put('archive:state', {
-          ...this.state(),
-          lastStep: new Date(this.now()).toISOString(),
-        });
+    const now = this.now();
+    const candidates = this.store
+      .candidates()
+      .filter(
+        (candidate) =>
+          candidate.topics.length &&
+          ((candidate.status === 'pending' && inventory.parsed < target) ||
+            (candidate.status === 'failed' &&
+              (candidate.attemptedAt === null ||
+                now - candidate.attemptedAt >= SOURCE_RETRY_INTERVAL_MS))),
+      );
+    const existing = new Set(this.store.articles().map((article) => article.id));
+    const topicCounts = inventory.topics;
+    candidates.sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'failed' ? -1 : 1;
+      if (a.status === 'failed' && b.status === 'failed') {
+        const oldestAttempt = (a.attemptedAt ?? 0) - (b.attemptedAt ?? 0);
+        if (oldestAttempt !== 0) return oldestAttempt;
       }
+      const priority = (candidate: Candidate) =>
+        Math.min(...candidate.topics.map((topic) => topicCounts[topic] ?? 0));
+      return priority(a) - priority(b) || b.score - a.score;
+    });
+    const chosen: Candidate[] = [];
+    const limit = inventory.parsed < target ? Math.min(3, target - inventory.parsed) : 1;
+    let retryChosen = false;
+    for (const candidate of candidates) {
+      if (existing.has(candidate.id) || (candidate.status === 'failed' && retryChosen)) continue;
+      chosen.push(candidate);
+      if (candidate.status === 'failed') retryChosen = true;
+      if (chosen.length >= limit) break;
+    }
+    this.nextStepDelay = chosen.length ? 1500 : IDLE_INTERVAL_MS;
+    if (chosen.length) {
+      await Promise.all(chosen.map((candidate) => this.prepareCandidate(candidate)));
+      this.store.put('archive:state', {
+        ...this.state(),
+        lastStep: new Date(this.now()).toISOString(),
+      });
     }
     const latest = this.store.inventory();
-    this.logger.info('reading_inventory', {
-      indexed: latest.indexed,
-      parsed: latest.parsed,
-      failed: latest.failed,
+    if (
+      !this.inventoryLog ||
+      latest.indexed !== this.inventoryLog.indexed ||
+      latest.parsed !== this.inventoryLog.parsed ||
+      latest.failed !== this.inventoryLog.failed ||
+      this.now() - this.inventoryLog.at >= INVENTORY_HEARTBEAT_MS
+    ) {
+      const fields = { indexed: latest.indexed, parsed: latest.parsed, failed: latest.failed };
+      this.logger.info('reading_inventory', fields);
+      this.inventoryLog = { ...fields, at: this.now() };
+    }
+    return this.state().month >= 60 && latest.parsed >= target;
+  }
+
+  private async prepareCandidate(candidate: Candidate): Promise<void> {
+    this.store.saveCandidate({ ...candidate, status: 'failed', attemptedAt: this.now() });
+    const cached = this.store.source(candidate.id);
+    let source: Article;
+    if (cached && sourceRejectionCode(cached) === null) {
+      source = cached;
+    } else {
+      try {
+        source = await this.extractor.extract({
+          id: candidate.id,
+          type: 'story',
+          title: candidate.title,
+          url: candidate.url,
+          time: candidate.time,
+          kids: [],
+        });
+      } catch (error) {
+        this.logger.warn('reading_article_fetch_failed', {
+          storyId: candidate.id,
+          code: errorCode(error),
+        });
+        return;
+      }
+    }
+    if (this.abort.signal.aborted) return;
+    const rejection = sourceRejectionCode(source);
+    if (rejection) {
+      this.logger.warn('reading_article_fetch_failed', { storyId: candidate.id, code: rejection });
+      return;
+    }
+    this.store.saveSource(candidate.id, source);
+    const reader = this.store.reader(this.ownerId) ?? newReader(this.ownerId);
+    let article: ReadingArticle;
+    try {
+      const [annotated] = await this.assistant.annotate(
+        [articleFromCandidate(candidate, source)],
+        reader,
+        new Map([[candidate.id, source]]),
+      );
+      if (!annotated) throw new Error('Missing archive article annotation');
+      article = annotated;
+    } catch (error) {
+      this.logger.warn('reading_annotation_failed', {
+        storyId: candidate.id,
+        code: errorCode(error),
+      });
+      return;
+    }
+    this.store.transaction(() => {
+      this.store.saveArticle(article);
+      this.store.saveCandidate({ ...candidate, status: 'ready', attemptedAt: this.now() });
     });
-    return this.state().month >= 60 && this.store.inventory().parsed >= target;
   }
 
   private async run(): Promise<void> {
@@ -226,9 +261,10 @@ export class ReadingBackfill {
         this.logger.warn('reading_backfill_failed', { code: errorCode(error) });
       }
       try {
-        await delay(complete ? 3_600_000 : failed ? 60_000 : 1500, undefined, {
-          signal: this.abort.signal,
-        });
+        await this.pause(
+          complete ? 3_600_000 : failed ? IDLE_INTERVAL_MS : this.nextStepDelay,
+          this.abort.signal,
+        );
       } catch {
         break;
       }
@@ -237,9 +273,12 @@ export class ReadingBackfill {
 }
 
 export function looksBlocked(text: string): boolean {
-  return (
-    /(?:just a moment|verify you are human|checking your browser|access denied|enable javascript and cookies to continue|captcha)/i.test(
-      text.slice(0, 600),
-    ) && text.length < 4000
-  );
+  return looksLikeChallengePage(text);
+}
+
+function sourceRejectionCode(source: Article): string | null {
+  if (source.source === 'unavailable') return source.failureCode ?? 'article_unavailable';
+  if (source.text.length < 200) return 'article_text_insufficient';
+  if (looksBlocked(source.text)) return 'article_challenge_page';
+  return null;
 }
