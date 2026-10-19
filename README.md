@@ -43,6 +43,8 @@ The SQLite volume retains drafts, Telegraph paths, Telegram message IDs, retry s
 
 Private recommendations, account binding, historical article backfill, and inventory counters are documented in [the reading assistant guide](docs/reading.md). Enable with `TELEGRAM_OWNER_ID`; the existing channel publisher remains available without it.
 
+In the owner's private chat, send `/status` or `运行状态` for publishing progress, archive counts, recent publications, and current failures. Inline buttons refresh the same panel. This read-only view does not invoke the model or trigger publishing.
+
 `GET /healthz` is public and returns only process health. Every `/admin/*` route requires `Authorization: Bearer <ADMIN_TOKEN>`. Avoid putting this token in URLs.
 
 | Method | Route | Behavior |

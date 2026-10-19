@@ -2,7 +2,9 @@
 
 ## Scope
 
-The existing bot also accepts private messages from `TELEGRAM_OWNER_ID`. This is a numeric Telegram user ID configured by the operator, not an editable username or a user-supplied parameter. Other users, forwarded buttons in other chats, and group messages cannot access the reader's profile. The first accepted private interaction creates the profile. The initial interests are architecture, startups, and engineering experience.
+The bot accepts private reading requests from `TELEGRAM_OWNER_ID` and users explicitly enabled by that owner. This is the existing HN article recommendation feature. Only the configured owner can see operations data and manage access. Group messages and forwarded buttons in other chats cannot access profiles. Each allowed user has their own interests, history, recommendations, and bookmarks; article sources and generated pages are shared. The first accepted reading interaction creates the profile. Initial interests are architecture, startups, and engineering experience.
+
+Open `/status` → “推荐用户管理” → “添加 UID”, then send the user's numeric Telegram UID. The owner can also use `/users`, `/allow UID`, and `/deny UID`. Entries have enable/disable buttons; disabling retains the profile and bookmarks, prevents subsequent requests and message delivery, and can be reversed. The owner cannot be disabled through this list. Grants persist in the existing SQLite store across deployments. They do not grant management rights. Users must open a private chat with the bot themselves; `/id` lets anyone in their own private chat discover their UID without granting access or creating a profile. An in-flight model request may finish after access is disabled, but its response will not be delivered. Enabled users share the configured OpenRouter account budget; this release adds no per-user billing or quotas.
 
 The reader gets up to five articles per message. Inline number buttons select articles; selection does not alter preference weights. Save, more-like-this, fewer-like-this, cancel, and undo edit the existing message. Saved articles paginate in place. New recommendations append a new batch. Replying to a previous batch uses that batch's numbering. Unresolvable replies ask for the target batch instead of using the latest one.
 
@@ -27,9 +29,15 @@ Deep summaries retain the publisher's evidence validation. Private recommendatio
 
 ## Operation and verification
 
+Send `/status`, `运行状态`, or `状态面板` in the owner's private chat to open the operations panel. It shows automatic publishing mode, the active publication stage and story ID, last completed cycle, publication and unresolved-delivery counts, historical indexing progress (out of 60 months), parsed articles versus the current target, readable/deep-page counts, and recent publication timestamps. Times are shown in UTC+8. The panel does not invoke the model or start work.
+
+“刷新状态” edits the same message with a fresh snapshot. “查看失败” shows up to five current channel failure records, their error codes, attempt counts and earliest retry times; archive failures are counted separately in the overview. These are current records rather than lifetime statistics. An elapsed retry delay does not guarantee publication: unpublished stories must still appear in the HN top 30. `sending` and `uncertain` records are shown as deliveries requiring inspection, not safe-to-retry work. Only the configured owner in their own private chat can read either view.
+
+The panel is an on-demand snapshot, not an independent uptime monitor: if the service is down it cannot respond, and Telegram polling may wait for a preceding reading operation to finish. The owner's `/help` lists status and access commands.
+
 Omit `TELEGRAM_OWNER_ID` to disable the private bot and archive worker. No webhook may be registered for the token when long polling is used. Run one service replica with zero deployment overlap. The worker is stopped and drained before its database is closed.
 
-`GET /admin/reading` uses the existing admin authorization and exposes polling freshness, binding status, indexed/readable/parsed/failed counts, per-topic coverage, truncated-source count, and deep-page count. `POST /admin/reading/send` sends one preview batch to the configured owner only.
+`GET /admin/reading` uses the existing admin authorization and exposes polling freshness, binding status, indexed/readable/parsed/failed counts, per-topic coverage, truncated-source count, deep-page count, and access capability/counts without user IDs. `POST /admin/reading/send` sends one preview batch to the configured owner only.
 
 Incoming updates are serialized. The persisted offset is claimed before side effects to avoid automatically repeating an ambiguous send after a crash. A crash at that boundary can leave an action unanswered; the user can request it again. Button mutations are idempotent states, and a failed message edit can be retried. Raw user messages and credentials are not logged.
 

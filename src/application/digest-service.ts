@@ -91,6 +91,7 @@ const systemRuntime: Runtime = {
 export class DigestService {
   private running = false;
   private mostRecentCycle: CycleResult | null = null;
+  private work: { stage: string; storyId: number | null } | null = null;
 
   constructor(
     private readonly config: Config,
@@ -102,6 +103,10 @@ export class DigestService {
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  currentWork() {
+    return this.work ? { ...this.work } : null;
   }
 
   automaticPublishingEnabled(): boolean {
@@ -183,6 +188,7 @@ export class DigestService {
   async runCycle(): Promise<CycleResult> {
     return this.runExclusive(async () => {
       const result = { published: 0, updated: 0, failed: 0 };
+      this.work = { stage: '获取 HN 热门文章', storyId: null };
       const stories = await this.dependencies.getTopStories();
       this.logger.info('candidates_scanned', {
         count: stories.length,
@@ -243,6 +249,7 @@ export class DigestService {
         if (recovery.handled.has(publication.id)) continue;
         if (!this.repository.retryAllowed(publication.id, this.runtime.now())) continue;
         try {
+          this.work = { stage: '更新已发布文章', storyId: publication.id };
           const story =
             topStories.get(publication.id) ?? (await this.dependencies.getItem(publication.id));
           if (story && !story.dead && !story.deleted) {
@@ -288,6 +295,7 @@ export class DigestService {
       clearInterval(renewal);
       this.repository.releaseLease(owner);
       this.running = false;
+      this.work = null;
     }
   }
 
@@ -310,11 +318,13 @@ export class DigestService {
       throw new UnreadableStoryError('The Hacker News item is not a readable story');
     }
 
+    this.work = { stage: '提取正文与读取评论', storyId: story.id };
     const [article, comments] = await Promise.all([
       this.dependencies.extractArticle(story),
       this.dependencies.collectComments(story),
     ]);
     if (article.source === 'unavailable' && comments.length === 0) throw new UnreadableStoryError();
+    this.work = { stage: '生成中文摘要', storyId: story.id };
     return this.dependencies.summarize(story, article, comments, this.tagCatalog());
   }
 
@@ -328,6 +338,7 @@ export class DigestService {
 
     let current = publication;
     if (!current.page) {
+      this.work = { stage: '保存 Telegraph 页面', storyId: publication.id };
       const page = await this.dependencies.savePage(current.draft, null);
       current = { ...current, page };
       this.repository.savePublication(current);
@@ -336,6 +347,7 @@ export class DigestService {
     if (!page) throw new Error('Publication page was not persisted');
 
     const sending: Publication = { ...current, state: 'sending' };
+    this.work = { stage: '发送 Telegram 消息', storyId: publication.id };
     this.repository.savePublication(sending);
     let messageId: number;
     try {
@@ -417,6 +429,7 @@ export class DigestService {
     }
 
     for (const { publication, state: previous } of selected) {
+      this.work = { stage: '恢复缺失正文', storyId: publication.id };
       result.handled.add(publication.id);
       const attempts = previous.attempts + 1;
       let state: ArticleRecovery = {

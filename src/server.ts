@@ -17,6 +17,7 @@ import { OpenRouterReadingAssistant } from './recommendations/assistant.js';
 import { ReadingService } from './recommendations/service.js';
 import { ReadingPoller } from './recommendations/poller.js';
 import { DeepReading } from './recommendations/deep-reading.js';
+import { operationsPanel } from './recommendations/status.js';
 
 const config = readConfig();
 const repository = new SqlitePublicationRepository(config.DATA_DIR);
@@ -57,6 +58,7 @@ const readingService =
         readingAssistant,
         Date.now,
         deepReading,
+        (view) => operationsPanel(service, readingBackfill, view),
       )
     : null;
 const readingPoller =
@@ -87,6 +89,7 @@ const server = createAdminServer({
       ? readingStore?.reader(config.TELEGRAM_OWNER_ID) !== null
       : false,
     inventory: readingBackfill?.status() ?? null,
+    access: readingService?.accessStatus() ?? null,
   }),
   ...(readingService ? { sendReadingPreview: () => readingService.sendPreview() } : {}),
 });

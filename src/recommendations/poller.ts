@@ -63,7 +63,7 @@ export class ReadingPoller {
           code: errorCode(error),
         });
         try {
-          await this.service.reportFailure();
+          await this.service.reportFailure(parsed.data);
         } catch (notificationError) {
           this.logger.warn('reading_error_notification_failed', {
             code: errorCode(notificationError),

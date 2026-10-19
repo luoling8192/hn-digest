@@ -67,6 +67,7 @@ async function routeAdminRequest(
       startedAt,
       autoPublish: service.automaticPublishingEnabled(),
       busy: service.isRunning,
+      currentWork: service.currentWork(),
       lastCycle: service.lastCycle(),
       publications: service.publications().map((publication) => ({
         id: publication.id,

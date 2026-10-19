@@ -13,6 +13,8 @@ import { readingMessage, renderBatch, type ReadingMessage } from './presentation
 import { feedbackFor, recommend } from './ranking.js';
 import type { ReadingStore } from './store.js';
 import type { DeepReader } from './deep-reading.js';
+import type { StatusView } from './status.js';
+import { ReadingAccess } from './access.js';
 
 const userSchema = z.object({ id: z.number().int().positive(), is_bot: z.boolean() });
 const messageSchema = z.object({
@@ -46,6 +48,7 @@ type FeedbackAction = 'save' | 'like' | 'less' | 'unsave';
 
 export class ReadingService {
   private operation: Promise<void> = Promise.resolve();
+  private readonly access: ReadingAccess;
   constructor(
     readonly ownerId: number,
     private readonly store: ReadingStore,
@@ -54,13 +57,17 @@ export class ReadingService {
     private readonly assistant: ReadingAssistant,
     private readonly now: () => number = Date.now,
     private readonly deepReader?: DeepReader,
-  ) {}
+    private readonly statusPanel?: (view: StatusView) => ReadingMessage,
+  ) {
+    this.access = new ReadingAccess(ownerId, store, transport);
+  }
 
   accepts(update: ReadingUpdate): boolean {
     const from = update.callback_query?.from ?? update.message?.from;
     const message = update.callback_query?.message ?? update.message;
     return (
-      from?.id === this.ownerId &&
+      from !== undefined &&
+      (this.access.allowed(from.id) || update.message?.text?.trim() === '/id') &&
       !from.is_bot &&
       message?.chat.type === 'private' &&
       message.chat.id === from.id
@@ -69,7 +76,39 @@ export class ReadingService {
 
   async handle(update: ReadingUpdate): Promise<void> {
     if (!this.accepts(update)) return;
-    return this.serial(() => this.handleAuthorized(update));
+    const text = update.message?.text?.trim();
+    const callback = update.callback_query;
+    const userId = callback?.from.id ?? update.message?.from?.id;
+    if (userId === undefined) return;
+    if (text === '/id') {
+      await this.transport.call('sendMessage', {
+        chat_id: userId,
+        text: `你的 Telegram UID：${userId}`,
+      });
+      return;
+    }
+    if (await this.access.handle(update)) return;
+    const statusCommand =
+      text !== undefined && /^(\/status(?:@\w+)?|运行状态|状态面板)$/.test(text);
+    const view = callback?.data?.match(/^ops:(overview|failures)$/)?.[1] as StatusView | undefined;
+    if (statusCommand || view) {
+      if (userId !== this.ownerId) return;
+      if (callback) {
+        await this.transport.call('answerCallbackQuery', { callback_query_id: callback.id });
+      }
+      const panel = this.statusPanel
+        ? this.statusPanel(view ?? 'overview')
+        : readingMessage('运行状态面板尚未配置。');
+      await this.transport.call(callback ? 'editMessageText' : 'sendMessage', {
+        chat_id: this.ownerId,
+        ...(callback?.message ? { message_id: callback.message.message_id } : {}),
+        ...panel,
+      });
+      return;
+    }
+    return this.serial(async () => {
+      if (this.access.allowed(userId)) await this.handleAuthorized(update, userId);
+    });
   }
 
   async sendPreview(): Promise<void> {
@@ -80,10 +119,26 @@ export class ReadingService {
     });
   }
 
+  accessStatus() {
+    return {
+      ownerOnlyAdmin: true,
+      enabledReaders: 1 + this.access.grants().filter((g) => g.enabled).length,
+      statusPanel: this.statusPanel !== undefined,
+    };
+  }
+
   resumeDeepReading(): void {
-    const reader = this.store.reader(this.ownerId);
-    const batch = reader?.latestBatch ? this.store.batch(reader.latestBatch) : null;
-    if (batch?.messageId) this.prepareBatch(batch);
+    for (const userId of [
+      this.ownerId,
+      ...this.access
+        .grants()
+        .filter((g) => g.enabled)
+        .map((g) => g.userId),
+    ]) {
+      const reader = this.store.reader(userId);
+      const batch = reader?.latestBatch ? this.store.batch(reader.latestBatch) : null;
+      if (batch?.messageId) this.prepareBatch(batch);
+    }
   }
 
   private serial(run: () => Promise<void>): Promise<void> {
@@ -95,8 +150,8 @@ export class ReadingService {
     return operation;
   }
 
-  private async handleAuthorized(update: ReadingUpdate): Promise<void> {
-    const reader = this.store.reader(this.ownerId) ?? newReader(this.ownerId);
+  private async handleAuthorized(update: ReadingUpdate, userId: number): Promise<void> {
+    const reader = this.store.reader(userId) ?? newReader(userId);
     this.store.saveReader(reader);
     if (update.callback_query) {
       const callback = update.callback_query;
@@ -163,7 +218,7 @@ export class ReadingService {
       await this.send(
         reader,
         readingMessage(
-          '发送“推荐”获取 5 篇；点编号后可批量收藏、反馈。\n发送“我的收藏”查看待读；发送“我的偏好”调整兴趣。\n回复清单说“收藏 2、4”或“聊聊第 2 篇”也可以。',
+          `${reader.userId === this.ownerId ? '发送 /status 查看运行状态，/users 管理推荐用户。\n' : ''}发送 /id 查看自己的 UID。\n发送“推荐”获取 5 篇；点编号后可批量收藏、反馈。\n发送“我的收藏”查看待读；发送“我的偏好”调整兴趣。\n回复清单说“收藏 2、4”或“聊聊第 2 篇”也可以。`,
         ),
       );
       return;
@@ -192,9 +247,13 @@ export class ReadingService {
     this.store.saveReader(reader);
   }
 
-  async reportFailure(): Promise<void> {
+  async reportFailure(update?: ReadingUpdate): Promise<void> {
+    const userId = update
+      ? (update.callback_query?.from.id ?? update.message?.from?.id)
+      : this.ownerId;
+    if (userId === undefined || !this.access.allowed(userId)) return;
     await this.send(
-      newReader(this.ownerId),
+      newReader(userId),
       readingMessage(
         '这次操作没有完整完成。可以重试按钮，或发送“推荐”重新获取；已经保存的收藏会保留。',
       ),
@@ -464,6 +523,7 @@ export class ReadingService {
   }
 
   private prepareBatch(batch: Batch): void {
+    if (!this.access.allowed(batch.userId)) return;
     if (batch.kind === 'recommendations') {
       this.deepReader?.enqueue?.(this.articlesFor(batch), () =>
         this.serial(async () => {
@@ -500,12 +560,14 @@ export class ReadingService {
   }
 
   private async send(reader: Reader, message: ReadingMessage): Promise<number> {
+    if (!this.access.allowed(reader.userId)) throw new Error('Reading access revoked');
     return sentSchema.parse(
       await this.transport.call('sendMessage', { chat_id: reader.userId, ...message }),
     ).message_id;
   }
 
   private async edit(reader: Reader, batch: Batch): Promise<void> {
+    if (!this.access.allowed(reader.userId)) return;
     if (!batch.messageId) return;
     await this.transport.call('editMessageText', {
       chat_id: reader.userId,
