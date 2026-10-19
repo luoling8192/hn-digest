@@ -15,6 +15,9 @@ import {
   type ReadingUpdate,
 } from '../src/recommendations/service.js';
 import { ReadingStore } from '../src/recommendations/store.js';
+import { readingMessage, type ReadingMessage } from '../src/recommendations/presentation.js';
+import type { StatusView } from '../src/recommendations/status.js';
+import { ReadingAccess } from '../src/recommendations/access.js';
 import { silentLogger } from '../src/logger.js';
 import { draft, story } from './fixtures.js';
 
@@ -167,7 +170,7 @@ function callback(
     },
   };
 }
-function harness(deepReader?: DeepReader) {
+function harness(deepReader?: DeepReader, statusPanel?: (view: StatusView) => ReadingMessage) {
   const directory = mkdtempSync(join(process.cwd(), 'reading-test-'));
   const store = new ReadingStore(directory);
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
@@ -196,6 +199,7 @@ function harness(deepReader?: DeepReader) {
     assistant,
     () => 1000,
     deepReader,
+    statusPanel,
   );
   for (let id = 1; id <= 12; id++) store.saveArticle(article(id));
   const latest = () => {
@@ -219,6 +223,150 @@ function harness(deepReader?: DeepReader) {
     },
   };
 }
+
+test('owner status commands and refresh buttons read fresh data without model calls or recommendations', async () => {
+  let version = 1;
+  const h = harness(undefined, (view) => readingMessage(`${view} ${version}`));
+  h.assistant.understand = async () => {
+    throw new Error('Status must not invoke the model');
+  };
+  try {
+    await h.service.handle(message('/status'));
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0]?.method, 'sendMessage');
+    assert.equal(h.calls[0]?.payload.chat_id, owner);
+    assert.equal(h.calls[0]?.payload.text, 'overview 1');
+    assert.equal(h.store.reader(owner), null);
+    version = 2;
+    const update = callback('ignored', 11, 'ignored');
+    assert.ok(update.callback_query);
+    update.callback_query.data = 'ops:failures';
+    await h.service.handle(update);
+    assert.equal(h.calls[1]?.method, 'answerCallbackQuery');
+    assert.equal(h.calls[2]?.method, 'editMessageText');
+    assert.equal(h.calls[2]?.payload.message_id, 11);
+    assert.equal(h.calls[2]?.payload.text, 'failures 2');
+    await h.service.handle(message('运行状态'));
+    assert.equal(h.calls.at(-1)?.payload.text, 'overview 2');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('owner grants persist and guest reading stays isolated from owner data and administration', async () => {
+  const h = harness(undefined, () => {
+    throw new Error('Guest read admin status');
+  });
+  try {
+    await h.service.handle(message('/allow 200'));
+    const reopened = new ReadingStore(h.directory);
+    try {
+      assert.equal(new ReadingAccess(owner, reopened, h.transport).allowed(200), true);
+    } finally {
+      reopened.close();
+    }
+    await h.service.handle(message('推荐', 200));
+    const guest = h.store.reader(200);
+    assert.ok(guest?.latestBatch);
+    const guestBatch = h.store.batch(guest.latestBatch);
+    assert.ok(guestBatch?.messageId);
+    assert.equal(guestBatch.userId, 200);
+    assert.equal(h.calls.at(-1)?.payload.chat_id, 200);
+    assert.equal(h.store.reader(owner), null);
+    await h.service.handle(message('我喜欢数据库', 200));
+    assert.equal(h.store.reader(200)?.interests[0]?.name, '数据库');
+    await h.service.handle(message('推荐'));
+    const own = h.latest();
+    await h.service.handle(callback(own.batch.id, guestBatch.messageId, 'select:1', 200));
+    assert.deepEqual(h.store.batch(own.batch.id)?.selected, []);
+    const before = h.calls.length;
+    await h.service.handle(message('/status', 200));
+    await h.service.handle(message('/allow 300', 200));
+    for (const data of [
+      'ops:overview',
+      'ops:failures',
+      'ops:users',
+      'ops:add',
+      'ops:grant:300',
+      'ops:revoke:100',
+    ]) {
+      const update = callback('ignored', guestBatch.messageId, 'ignored', 200);
+      assert.ok(update.callback_query);
+      update.callback_query.data = data;
+      await h.service.handle(update);
+    }
+    assert.equal(h.calls.length, before);
+    assert.equal(h.service.accepts(message('推荐', 300)), false);
+    await h.service.reportFailure(message('推荐', 200));
+    assert.equal(h.calls.at(-1)?.payload.chat_id, 200);
+    await h.service.handle(message('/deny 200'));
+    const after = h.calls.length;
+    await h.service.handle(message('推荐', 200));
+    await h.service.handle(callback(guestBatch.id, guestBatch.messageId, 'save', 200));
+    await h.service.reportFailure(message('推荐', 200));
+    assert.equal(h.calls.length, after);
+    assert.equal(h.store.reader(200)?.latestBatch, guest.latestBatch);
+    await h.service.handle(message('/allow 200'));
+    assert.equal(h.service.accepts(message('推荐', 200)), true);
+    await h.service.handle(message('/deny 100'));
+    assert.equal(h.service.accepts(message('/status')), true);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('panel UID prompt validates input and unauthorized users can only discover their own UID', async () => {
+  const h = harness();
+  try {
+    await h.service.handle(message('/id', 200));
+    assert.equal(h.calls.at(-1)?.payload.chat_id, 200);
+    assert.match(String(h.calls.at(-1)?.payload.text), /200/);
+    assert.equal(h.store.reader(200), null);
+    const update = callback('ignored', 10, 'ignored');
+    assert.ok(update.callback_query);
+    update.callback_query.data = 'ops:add';
+    await h.service.handle(update);
+    assert.match(String(h.calls.at(-1)?.payload.text), /请发送对方/);
+    await h.service.handle(message('99999999999999999999999'));
+    assert.match(String(h.calls.at(-1)?.payload.text), /有效的正整数/);
+    await h.service.handle(message('200'));
+    assert.equal(h.service.accepts(message('推荐', 200)), true);
+    assert.match(String(h.calls.at(-1)?.payload.text), /200 · 已开启/);
+    const disable = callback('ignored', 10, 'ignored');
+    assert.ok(disable.callback_query);
+    disable.callback_query.data = 'ops:revoke:200';
+    await h.service.handle(disable);
+    assert.equal(h.service.accepts(message('推荐', 200)), false);
+    assert.match(String(h.calls.at(-1)?.payload.text), /200 · 已停用/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('status data rejects non-owner users, group commands and forwarded refresh buttons', async () => {
+  const h = harness(undefined, () => {
+    throw new Error('Unauthorized status read');
+  });
+  try {
+    await h.service.handle(message('/status', 999));
+    const group = message('/status');
+    assert.ok(group.message);
+    group.message.chat = { id: -100, type: 'group' };
+    await h.service.handle(group);
+    const forwarded = callback('ignored', 10, 'ignored', 999);
+    assert.ok(forwarded.callback_query);
+    forwarded.callback_query.data = 'ops:overview';
+    await h.service.handle(forwarded);
+    const otherChat = callback('ignored', 10, 'ignored');
+    assert.ok(otherChat.callback_query?.message);
+    otherChat.callback_query.data = 'ops:overview';
+    otherChat.callback_query.message.chat.id = 999;
+    await h.service.handle(otherChat);
+    assert.deepEqual(h.calls, []);
+  } finally {
+    h.cleanup();
+  }
+});
 
 test('deep page completion updates the existing batch without losing selection and startup resumes without another message', async () => {
   const callbacks: (() => Promise<void>)[] = [];

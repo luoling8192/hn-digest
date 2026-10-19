@@ -30,9 +30,14 @@ test('admin HTTP boundary exposes health while protecting operational data', asy
     const headers = { authorization: `Bearer ${config.ADMIN_TOKEN}` };
     const status = await fetch(`${base}/admin/status`, { headers });
     assert.equal(status.status, 200);
-    const body = (await status.json()) as { publications: unknown[]; startedAt: string };
+    const body = (await status.json()) as {
+      publications: unknown[];
+      startedAt: string;
+      currentWork: unknown;
+    };
     assert.equal(body.startedAt, '2026-09-18T00:00:00.000Z');
     assert.deepEqual(body.publications, []);
+    assert.equal(body.currentWork, null);
 
     const missing = await fetch(`${base}/admin/publish/999`, { method: 'POST', headers });
     assert.equal(missing.status, 404);
