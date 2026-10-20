@@ -73,6 +73,9 @@ export class ReadingStore {
   saveSource(id: number, source: Article): void {
     this.put(`source:${id}`, articleSchema.parse(source));
   }
+  deleteSource(id: number): void {
+    this.db.prepare('DELETE FROM reading_state WHERE key=?').run(`source:${id}`);
+  }
 
   candidates(): Candidate[] {
     return this.db

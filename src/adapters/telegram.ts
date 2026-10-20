@@ -9,11 +9,28 @@ const envelopeSchema = z.object({
   result: z.unknown().optional(),
   error_code: z.number().int().optional(),
   description: z.string().optional(),
+  parameters: z.object({ retry_after: z.number().int().nonnegative().optional() }).optional(),
 });
 
 const messageSchema = z.object({ message_id: z.number().int().positive() });
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+function rejectionCode(status: number, description: string | undefined): string {
+  if (status === 401) return 'telegram_unauthorized';
+  if (status === 403) return 'telegram_forbidden';
+  if (status === 429) return 'telegram_rate_limited';
+  if (status === 400 && description) {
+    if (/^Bad Request: message to edit not found$/i.test(description))
+      return 'telegram_message_not_found';
+    if (/^Bad Request: message can't be edited$/i.test(description))
+      return 'telegram_message_not_editable';
+    if (/^Bad Request: message is too long$/i.test(description)) return 'telegram_message_too_long';
+    if (/^Bad Request: can't parse entities(?:[:.]|$)/i.test(description))
+      return 'telegram_invalid_entities';
+  }
+  return `telegram_http_${status}`;
+}
 
 export class TelegramClient {
   constructor(
@@ -83,8 +100,14 @@ export class TelegramClient {
       return true;
     }
 
-    throw new DeliveryRejectedError(
-      `Telegram rejected request (${envelope.data.error_code ?? response.status})`,
-    );
+    const status = envelope.data.error_code ?? response.status;
+    const code = rejectionCode(status, envelope.data.description);
+    const retryAfterSeconds = envelope.data.parameters?.retry_after;
+    throw new DeliveryRejectedError(`Telegram rejected request: ${code}`, {
+      code,
+      status,
+      method,
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    });
   }
 }

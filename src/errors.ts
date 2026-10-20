@@ -47,8 +47,18 @@ export class RemoteHttpError extends Error {
   }
 }
 
+export interface DeliveryRejectionMetadata {
+  code: string;
+  status: number;
+  method: string;
+  retryAfterSeconds?: number;
+}
+
 export class DeliveryRejectedError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly metadata?: DeliveryRejectionMetadata,
+  ) {
     super(message);
     this.name = 'DeliveryRejectedError';
   }
@@ -64,6 +74,7 @@ export class DeliveryUncertainError extends Error {
 export function errorCode(error: unknown): string {
   if (error instanceof ApplicationError) return error.code;
   if (error instanceof RemoteHttpError) return `${error.service}_http_${error.status}`;
+  if (error instanceof DeliveryRejectedError && error.metadata) return error.metadata.code;
   if (error instanceof ZodError) return 'invalid_remote_data';
   if (error instanceof Error) return error.name;
   return 'unknown_error';

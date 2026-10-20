@@ -5,9 +5,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Article } from '../src/domain.js';
-import { ApplicationError } from '../src/errors.js';
+import { ApplicationError, RemoteHttpError } from '../src/errors.js';
 import { silentLogger } from '../src/logger.js';
-import type { ReadingAssistant } from '../src/recommendations/assistant.js';
+import {
+  OpenRouterReadingAssistant,
+  type ReadingAssistant,
+} from '../src/recommendations/assistant.js';
 import { ReadingBackfill } from '../src/recommendations/backfill.js';
 import { articleFromCandidate } from '../src/recommendations/catalog.js';
 import type { Candidate } from '../src/recommendations/model.js';
@@ -408,6 +411,173 @@ test('annotation retries reuse readable sources while only one failed candidate 
     h.cleanup();
   }
 });
+
+test('a model-rejected cached page is fetched again after the retry deadline and becomes readable', async () => {
+  const h = harness();
+  let fetches = 0;
+  let annotations = 0;
+  const warnings: { event: string; code?: unknown }[] = [];
+  const rejectedSource = {
+    ...source,
+    text: 'Home Products Pricing Careers Contact About the company. '.repeat(12),
+  };
+  try {
+    h.store.saveCandidate(candidate(1));
+    h.store.saveSource(1, rejectedSource);
+    h.store.saveSource(2, source);
+    const assistant = new OpenRouterReadingAssistant(
+      { OPENROUTER_API_KEY: 'offline-fixture', OPENROUTER_MODEL: 'offline-fixture' },
+      {
+        request: async (_url, _service, init) => {
+          annotations++;
+          const request = JSON.parse(String(init?.body));
+          const input = JSON.parse(request.messages[1].content);
+          assert.equal(
+            input.articles[0].text,
+            annotations === 1 ? rejectedSource.text : source.text,
+          );
+          return {
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: {
+                  content: JSON.stringify({
+                    articles: [
+                      {
+                        id: 1,
+                        title: '数据库实现',
+                        description: '作者介绍了具体的数据库实现与性能测量。',
+                        topics: ['架构'],
+                        readable: annotations > 1,
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          };
+        },
+      },
+    );
+    const backfill = new ReadingBackfill(
+      h.store,
+      h.http,
+      {
+        extract: async () => {
+          fetches++;
+          return source;
+        },
+      },
+      assistant,
+      100,
+      { ...silentLogger, warn: (event, fields) => warnings.push({ event, ...fields }) },
+      1,
+      h.now,
+    );
+    await backfill.step();
+    assert.equal(h.store.source(1), null);
+    assert.deepEqual(h.store.source(2), source);
+    assert.equal(h.store.candidate(1)?.status, 'failed');
+    assert.deepEqual(warnings, [
+      { event: 'reading_annotation_failed', storyId: 1, code: 'reading_source_unreadable' },
+    ]);
+    h.advance(SIX_HOURS - 1);
+    await backfill.step();
+    assert.equal(fetches, 0);
+    assert.equal(annotations, 1);
+    h.advance(1);
+    await backfill.step();
+    assert.equal(fetches, 1);
+    assert.equal(annotations, 2);
+    assert.equal(h.store.candidate(1)?.status, 'ready');
+    assert.equal(h.store.article(1)?.title, '数据库实现');
+    assert.equal(h.store.article(1)?.evidence, 'fulltext');
+    assert.deepEqual(h.store.source(1), source);
+  } finally {
+    h.cleanup();
+  }
+});
+
+for (const [name, firstResponse] of [
+  ['temporary HTTP failure', new RemoteHttpError('openrouter', 503)],
+  ['temporary transport failure', new Error('Offline transport failed')],
+  ['truncated output', { choices: [{ finish_reason: 'length', message: { content: '' } }] }],
+  ['invalid JSON', { choices: [{ finish_reason: 'stop', message: { content: '{broken' } }] }],
+  [
+    'invalid annotation schema',
+    { choices: [{ finish_reason: 'stop', message: { content: '{}' } }] },
+  ],
+] as const) {
+  test(`archive ${name} preserves the source for the next annotation retry`, async () => {
+    const h = harness();
+    let annotations = 0;
+    let fetches = 0;
+    try {
+      h.store.saveCandidate(candidate(1));
+      h.store.saveSource(1, source);
+      const assistant = new OpenRouterReadingAssistant(
+        { OPENROUTER_API_KEY: 'offline-fixture', OPENROUTER_MODEL: 'offline-fixture' },
+        {
+          request: async () => {
+            annotations++;
+            if (annotations === 1) {
+              if (firstResponse instanceof Error) throw firstResponse;
+              return firstResponse;
+            }
+            return {
+              choices: [
+                {
+                  finish_reason: 'stop',
+                  message: {
+                    content: JSON.stringify({
+                      articles: [
+                        {
+                          id: 1,
+                          title: '数据库实现',
+                          description: '作者介绍了数据库实现。',
+                          topics: ['架构'],
+                          readable: true,
+                        },
+                      ],
+                    }),
+                  },
+                },
+              ],
+            };
+          },
+        },
+      );
+      const backfill = new ReadingBackfill(
+        h.store,
+        h.http,
+        {
+          extract: async () => {
+            fetches++;
+            return source;
+          },
+        },
+        assistant,
+        100,
+        silentLogger,
+        1,
+        h.now,
+      );
+      await backfill.step();
+      assert.equal(h.store.candidate(1)?.status, 'failed');
+      assert.deepEqual(h.store.source(1), source);
+      assert.equal(h.store.article(1), null);
+      h.advance(SIX_HOURS);
+      await backfill.step();
+      assert.equal(annotations, 2);
+      assert.equal(fetches, 0);
+      assert.equal(h.store.candidate(1)?.status, 'ready');
+      assert.equal(h.store.article(1)?.title, '数据库实现');
+      assert.deepEqual(h.store.source(1), source);
+    } finally {
+      h.cleanup();
+    }
+  });
+}
 
 test('idle archive runs back off and inventory diagnostics only repeat on changes or hourly heartbeat', async () => {
   const h = harness();
