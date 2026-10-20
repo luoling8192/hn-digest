@@ -27,7 +27,7 @@ import {
   UnreadableStoryError,
   errorCode,
 } from '../errors.js';
-import type { Logger } from '../logger.js';
+import type { LogFields, Logger } from '../logger.js';
 import { hashComments } from '../adapters/hacker-news.js';
 import { telegramMessageHash } from '../presentation.js';
 import type { PublicationRepository } from '../storage/publication-repository.js';
@@ -52,6 +52,15 @@ type ArticleRecovery = z.infer<typeof articleRecoverySchema>;
 
 function recoveryKey(id: number): string {
   return `article_recovery:${id}`;
+}
+
+function deliveryRejectionFields(error: unknown): LogFields {
+  if (!(error instanceof DeliveryRejectedError) || !error.metadata) return {};
+  return {
+    telegramMethod: error.metadata.method,
+    telegramStatus: error.metadata.status,
+    retryAfterSeconds: error.metadata.retryAfterSeconds,
+  };
 }
 
 function articleHost(publication: Publication): string {
@@ -228,7 +237,11 @@ export class DigestService {
         } catch (error) {
           this.repository.recordFailure(story.id, errorCode(error), this.runtime.now());
           result.failed += 1;
-          this.logger.error('publication_failed', { storyId: story.id, code: errorCode(error) });
+          this.logger.error('publication_failed', {
+            storyId: story.id,
+            code: errorCode(error),
+            ...deliveryRejectionFields(error),
+          });
         }
       }
 
@@ -259,7 +272,11 @@ export class DigestService {
         } catch (error) {
           this.repository.recordFailure(publication.id, errorCode(error), this.runtime.now());
           result.failed += 1;
-          this.logger.error('refresh_failed', { storyId: publication.id, code: errorCode(error) });
+          this.logger.error('refresh_failed', {
+            storyId: publication.id,
+            code: errorCode(error),
+            ...deliveryRejectionFields(error),
+          });
         }
       }
 
@@ -494,6 +511,7 @@ export class DigestService {
           code: errorCode(error),
           attempts,
           nextRetry: state.nextRetry,
+          ...deliveryRejectionFields(error),
         });
       }
     }

@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { looksLikeChallengePage } from '../adapters/article-quality.js';
 import type { Article, HackerNewsItem } from '../domain.js';
-import { errorCode } from '../errors.js';
+import { ApplicationError, errorCode } from '../errors.js';
 import type { JsonHttpClient } from '../http-client.js';
 import type { Logger } from '../logger.js';
 import type { ReadingAssistant } from './assistant.js';
@@ -235,9 +235,16 @@ export class ReadingBackfill {
         reader,
         new Map([[candidate.id, source]]),
       );
-      if (!annotated) throw new Error('Missing archive article annotation');
+      if (!annotated)
+        throw new ApplicationError(
+          'reading_annotations_incomplete',
+          502,
+          'Missing archive article annotation',
+        );
       article = annotated;
     } catch (error) {
+      if (error instanceof ApplicationError && error.code === 'reading_source_unreadable')
+        this.store.deleteSource(candidate.id);
       this.logger.warn('reading_annotation_failed', {
         storyId: candidate.id,
         code: errorCode(error),

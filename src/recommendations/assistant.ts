@@ -2,17 +2,16 @@ import { z } from 'zod';
 import type { Config } from '../config.js';
 import type { JsonHttpClient } from '../http-client.js';
 import type { Article } from '../domain.js';
+import { ApplicationError, RemoteHttpError } from '../errors.js';
 import { commandSchema, type Reader, type ReadingArticle, type ReadingCommand } from './model.js';
 
 const completionSchema = z.object({
-  choices: z
-    .array(
-      z.object({
-        finish_reason: z.string().nullable(),
-        message: z.object({ content: z.string() }),
-      }),
-    )
-    .min(1),
+  choices: z.array(
+    z.object({
+      finish_reason: z.string().nullable(),
+      message: z.object({ content: z.string().nullable() }),
+    }),
+  ),
 });
 const annotationSchema = z.object({
   articles: z
@@ -72,11 +71,25 @@ export class OpenRouterReadingAssistant implements ReadingAssistant {
       result.articles.length !== articles.length ||
       new Set(result.articles.map((a) => a.id)).size !== articles.length
     )
-      throw new Error('Incomplete reading annotations');
+      throw new ApplicationError(
+        'reading_annotations_incomplete',
+        502,
+        'Incomplete reading annotations',
+      );
     return articles.map((article) => {
       const annotation = result.articles.find((a) => a.id === article.id);
-      if (!annotation) throw new Error('Unknown reading annotation');
-      if (!annotation.readable) throw new Error('Archive source is not readable article content');
+      if (!annotation)
+        throw new ApplicationError(
+          'reading_annotation_id_mismatch',
+          502,
+          'Unknown reading annotation',
+        );
+      if (!annotation.readable)
+        throw new ApplicationError(
+          'reading_source_unreadable',
+          422,
+          'Archive source is not readable article content',
+        );
       return {
         ...article,
         title: annotation.title,
@@ -126,36 +139,57 @@ export class OpenRouterReadingAssistant implements ReadingAssistant {
     system: string,
     input: unknown,
   ): Promise<T> {
-    const raw = await this.http.request(
-      'https://openrouter.ai/api/v1/chat/completions',
-      'openrouter',
-      {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${this.config.OPENROUTER_API_KEY}`,
-          'content-type': 'application/json',
-          'HTTP-Referer': 'https://github.com/luoling8192/hn-digest',
-          'X-OpenRouter-Title': 'HN Digest',
-        },
-        body: JSON.stringify({
-          model: this.config.OPENROUTER_MODEL,
-          temperature: 0.1,
-          max_tokens: 4000,
-          response_format: {
-            type: 'json_schema',
-            json_schema: { name, strict: true, schema: z.toJSONSchema(schema) },
+    let raw: unknown;
+    try {
+      raw = await this.http.request(
+        'https://openrouter.ai/api/v1/chat/completions',
+        'openrouter',
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${this.config.OPENROUTER_API_KEY}`,
+            'content-type': 'application/json',
+            'HTTP-Referer': 'https://github.com/luoling8192/hn-digest',
+            'X-OpenRouter-Title': 'HN Digest',
           },
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: JSON.stringify(input) },
-          ],
-        }),
-      },
-      60_000,
-    );
+          body: JSON.stringify({
+            model: this.config.OPENROUTER_MODEL,
+            temperature: 0.1,
+            max_tokens: 4000,
+            response_format: {
+              type: 'json_schema',
+              json_schema: { name, strict: true, schema: z.toJSONSchema(schema) },
+            },
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: JSON.stringify(input) },
+            ],
+          }),
+        },
+        60_000,
+      );
+    } catch (error) {
+      if (error instanceof ApplicationError || error instanceof RemoteHttpError) throw error;
+      throw new ApplicationError('reading_request_failed', 502, 'Reading request failed', {
+        cause: error,
+      });
+    }
     const choice = completionSchema.parse(raw).choices[0];
-    if (!choice || choice.finish_reason === 'length')
-      throw new Error('Incomplete reading response');
-    return schema.parse(JSON.parse(choice.message.content));
+    if (!choice)
+      throw new ApplicationError('reading_response_empty', 502, 'Empty reading response');
+    if (choice.finish_reason === 'length')
+      throw new ApplicationError('reading_response_truncated', 502, 'Incomplete reading response');
+    if (choice.message.content === null || !choice.message.content.trim())
+      throw new ApplicationError('reading_response_empty', 502, 'Empty reading response');
+    let result: unknown;
+    try {
+      result = JSON.parse(choice.message.content);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new ApplicationError('reading_response_invalid_json', 502, 'Invalid reading JSON', {
+        cause: error,
+      });
+    }
+    return schema.parse(result);
   }
 }
