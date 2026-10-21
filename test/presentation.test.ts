@@ -38,6 +38,33 @@ test('source and reading time use explicit labels on separate lines', () => {
   assert.equal('reply_markup' in message, false);
 });
 
+test('channel feedback adds only callbacks while reading remains in the native preview', () => {
+  const plain = renderTelegramMessage(draft, 'https://telegra.ph/test');
+  const interactive = renderTelegramMessage(draft, 'https://telegra.ph/test', true);
+  assert.equal(interactive.text, plain.text);
+  assert.equal('reply_markup' in plain, false);
+  assert.deepEqual(interactive.reply_markup?.inline_keyboard, [
+    [
+      { text: '♡ 喜欢', callback_data: 'd:like:123' },
+      { text: '☆ 收藏', callback_data: 'd:save:123' },
+    ],
+  ]);
+  const pictured: Draft = {
+    ...draft,
+    article: {
+      ...draft.article,
+      media: { coverImage: 'https://example.com/cover.jpg', images: [] },
+    },
+  };
+  const planned = renderTelegramDelivery(pictured, 'https://telegra.ph/test', true);
+  assert.equal(planned.kind, 'text');
+  assert.deepEqual(planned.payload.reply_markup, interactive.reply_markup);
+  assert.notEqual(
+    telegramMessageHash(draft, 'https://telegra.ph/test'),
+    telegramMessageHash(draft, 'https://telegra.ph/test', true),
+  );
+});
+
 test('renders separate article and discussion sections with direct comment references', () => {
   const nodes = renderTelegraphPage(draft);
   const content = JSON.stringify(nodes);

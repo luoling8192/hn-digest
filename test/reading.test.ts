@@ -409,7 +409,8 @@ test('private reader binds trusted numeric identity; foreign users and groups ca
     const group = message('/start');
     if (group.message) group.message.chat = { id: -100, type: 'supergroup' };
     await h.service.handle(group);
-    assert.equal(h.calls.length, 0);
+    assert.equal(h.calls.length, 1);
+    assert.match(String(h.calls[0]?.payload.text), /喜欢和收藏向所有读者开放/);
     assert.equal(h.store.reader(owner), null);
     await h.service.handle(message('/start'));
     const { batch, messageId } = h.latest();

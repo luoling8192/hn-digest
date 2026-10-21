@@ -2,17 +2,17 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
+import { type Article, articleSchema } from '../domain.js';
 import {
-  batchSchema,
-  candidateSchema,
-  readerSchema,
-  readingArticleSchema,
   type Batch,
+  batchSchema,
   type Candidate,
+  candidateSchema,
   type Reader,
   type ReadingArticle,
+  readerSchema,
+  readingArticleSchema,
 } from './model.js';
-import { articleSchema, type Article } from '../domain.js';
 
 const rowSchema = z.object({ data: z.string() });
 
@@ -47,6 +47,15 @@ export class ReadingStore {
     return this.get(`reader:${userId}`, readerSchema);
   }
   saveReader(reader: Reader): void {
+    const current = this.reader(reader.userId);
+    if (current) {
+      for (const [id, feedback] of Object.entries(current.feedback)) {
+        const proposed = reader.feedback[id];
+        if (!proposed || proposed.revision < feedback.revision) {
+          reader.feedback[id] = feedback;
+        }
+      }
+    }
     this.put(`reader:${reader.userId}`, readerSchema.parse(reader));
   }
   batch(id: string): Batch | null {

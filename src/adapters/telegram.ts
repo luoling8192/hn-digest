@@ -17,12 +17,17 @@ export type FetchLike = (input: string | URL | Request, init?: RequestInit) => P
 
 export class TelegramClient {
   constructor(
-    private readonly config: Pick<Config, 'TELEGRAM_BOT_TOKEN' | 'TELEGRAM_CHAT_ID'>,
+    private readonly config: Pick<Config, 'TELEGRAM_BOT_TOKEN' | 'TELEGRAM_CHAT_ID'> &
+      Partial<Pick<Config, 'TELEGRAM_OWNER_ID'>>,
     private readonly fetchImplementation: FetchLike = fetch,
   ) {}
 
   async send(draft: Draft, page: Page): Promise<number> {
-    const delivery = renderTelegramDelivery(draft, page.url);
+    const delivery = renderTelegramDelivery(
+      draft,
+      page.url,
+      this.config.TELEGRAM_OWNER_ID !== undefined,
+    );
     const result = await this.call('sendMessage', {
       chat_id: this.config.TELEGRAM_CHAT_ID,
       ...delivery.payload,
@@ -35,12 +40,16 @@ export class TelegramClient {
   }
 
   async edit(draft: Draft, page: Page, messageId: number): Promise<void> {
-    const delivery = renderTelegramDelivery(draft, page.url);
+    const delivery = renderTelegramDelivery(
+      draft,
+      page.url,
+      this.config.TELEGRAM_OWNER_ID !== undefined,
+    );
     await this.call('editMessageText', {
       chat_id: this.config.TELEGRAM_CHAT_ID,
       message_id: messageId,
       ...delivery.payload,
-      reply_markup: { inline_keyboard: [] },
+      reply_markup: delivery.payload.reply_markup ?? { inline_keyboard: [] },
     });
   }
 

@@ -25,6 +25,7 @@ export function renderBatch(
   batch: Batch,
   reader: Reader,
   articles: ReadingArticle[],
+  recommendationsEnabled = true,
 ): ReadingMessage {
   const button = (text: string, action: string): ReadingButton => ({
     text,
@@ -57,13 +58,17 @@ export function renderBatch(
   ];
   if (batch.selected.length) {
     const n = batch.selected.length;
-    rows.push([button(`收藏这 ${n} 篇`, 'save'), button('多推荐类似', 'like')]);
-    rows.push([button('少推荐类似', 'less'), button('取消选择', 'clear')]);
-    if (batch.kind === 'saved') rows.push([button('移出收藏', 'unsave')]);
-    if (n === 1) rows.push([button('聊聊这篇', 'explain')]);
+    if (recommendationsEnabled) {
+      rows.push([button(`收藏这 ${n} 篇`, 'save'), button('多推荐类似', 'like')]);
+      rows.push([button('少推荐类似', 'less'), button('取消选择', 'clear')]);
+      if (batch.kind === 'saved') rows.push([button('移出收藏', 'unsave')]);
+      if (n === 1) rows.push([button('聊聊这篇', 'explain')]);
+    } else {
+      rows.push([button('移出收藏', 'unsave'), button('取消选择', 'clear')]);
+    }
   } else if (batch.kind === 'saved') {
     rows.push([...(batch.page > 0 ? [button('上一页', 'prev')] : []), button('下一页', 'next')]);
-    rows.push([button('给我推荐', 'more')]);
+    if (recommendationsEnabled) rows.push([button('给我推荐', 'more')]);
   } else {
     rows.push([button('再来 5 篇', 'more'), button('调整方向', 'preferences')]);
     rows.push([button('我的收藏', 'saved')]);

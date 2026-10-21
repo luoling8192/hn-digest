@@ -12,6 +12,8 @@ interface AdminServerOptions {
   startedAt?: string;
   stopping?: () => boolean;
   readingStatus?: () => unknown;
+  channelFeedbackEnabled?: boolean;
+  bindChannelPreview?: (storyId: number, messageId: number) => void;
   sendReadingPreview?: () => Promise<void>;
 }
 
@@ -32,6 +34,25 @@ export function createAdminServer(options: AdminServerOptions): Server {
     }
 
     try {
+      const previewBinding = url.pathname.match(
+        /^\/admin\/channel-feedback\/preview\/([^/]+)\/([^/]+)$/,
+      );
+      if (previewBinding && request.method === 'POST' && options.bindChannelPreview) {
+        const storyId = Number(previewBinding[1]);
+        const messageId = Number(previewBinding[2]);
+        if (
+          !/^[1-9]\d*$/.test(previewBinding[1] ?? '') ||
+          !/^[1-9]\d*$/.test(previewBinding[2] ?? '') ||
+          !Number.isSafeInteger(storyId) ||
+          !Number.isSafeInteger(messageId)
+        ) {
+          respondJson(response, 400, { error: 'invalid_preview_binding' });
+          return;
+        }
+        options.bindChannelPreview(storyId, messageId);
+        respondJson(response, 200, { bound: true, storyId, messageId });
+        return;
+      }
       if (
         url.pathname === '/admin/reading/send' &&
         request.method === 'POST' &&
@@ -45,7 +66,15 @@ export function createAdminServer(options: AdminServerOptions): Server {
         respondJson(response, 200, options.readingStatus?.() ?? { enabled: false });
         return;
       }
-      await routeAdminRequest(request, response, url, options.service, startedAt, options.logger);
+      await routeAdminRequest(
+        request,
+        response,
+        url,
+        options.service,
+        startedAt,
+        options.logger,
+        options.channelFeedbackEnabled === true,
+      );
     } catch (error) {
       const code = errorCode(error);
       options.logger.error('admin_failed', { code });
@@ -61,6 +90,7 @@ async function routeAdminRequest(
   service: DigestService,
   startedAt: string,
   logger: Logger,
+  channelFeedbackEnabled: boolean,
 ): Promise<void> {
   if (url.pathname === '/admin/status' && request.method === 'GET') {
     respondJson(response, 200, {
@@ -137,7 +167,7 @@ async function routeAdminRequest(
     respondJson(response, 200, {
       draft,
       content: renderTelegraphPage(draft),
-      message: renderTelegramMessage(draft, 'https://telegra.ph/preview'),
+      message: renderTelegramMessage(draft, 'https://telegra.ph/preview', channelFeedbackEnabled),
     });
     return;
   }

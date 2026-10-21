@@ -14,6 +14,26 @@ const pictured: Draft = {
   },
 };
 
+test('configured reading accounts enable real channel feedback on sends and edits', async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const client = new TelegramClient({ ...config, TELEGRAM_OWNER_ID: 100 }, async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, result: { message_id: 42 } });
+  });
+  await client.send(draft, page);
+  await client.edit(pictured, page, 42);
+  for (const request of requests) {
+    assert.deepEqual(request.reply_markup, {
+      inline_keyboard: [
+        [
+          { text: '♡ 喜欢', callback_data: 'd:like:123' },
+          { text: '☆ 收藏', callback_data: 'd:save:123' },
+        ],
+      ],
+    });
+  }
+});
+
 test('cover stories use sendMessage with a native Chinese reading preview and no URL button', async () => {
   const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
   const client = new TelegramClient(config, async (url, init) => {
@@ -88,7 +108,7 @@ test('cover story edits keep text delivery and its native reading preview in pla
   assert.deepEqual(request.body.reply_markup, { inline_keyboard: [] });
 });
 
-test('text edits explicitly clear an old custom URL keyboard', async () => {
+test('text edits explicitly clear an old custom URL keyboard when feedback is disabled', async () => {
   let payload: Record<string, unknown> = {};
   const client = new TelegramClient(config, async (_url, init) => {
     payload = JSON.parse(String(init?.body));

@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { readingMessage, type ReadingButton, type ReadingMessage } from './presentation.js';
-import type { ReadingStore } from './store.js';
+import { type ReadingButton, type ReadingMessage, readingMessage } from './presentation.js';
 import type { ReadingTransport, ReadingUpdate } from './service.js';
+import type { ReadingStore } from './store.js';
 
 const grantsSchema = z.array(
   z.object({ userId: z.number().int().positive().safe(), enabled: z.boolean() }),
@@ -41,7 +41,7 @@ export class ReadingAccess {
       ...(grants.length ? [] : ['尚未添加其他用户。']),
       '',
       '添加后，请对方先私聊 Bot 发送 /start。对方可发送 /id 查看自己的 UID。',
-      '开通仅授予文章推荐、收藏和偏好功能；管理面板仍仅你可用。各用户共用现有模型账户额度。',
+      '喜欢和收藏向所有读者开放。开通仅授予 AI 推荐、深入阅读和偏好功能；管理面板仍仅你可用。授权用户共用现有模型账户额度。',
     ].join('\n');
     const buttons: ReadingButton[][] = selected.map((g) => [
       {

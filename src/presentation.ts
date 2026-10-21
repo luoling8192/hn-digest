@@ -12,6 +12,9 @@ export interface TelegramMessagePayload {
     prefer_large_media: true;
     show_above_text: false;
   };
+  reply_markup?: {
+    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+  };
 }
 
 export interface TelegramDelivery {
@@ -235,7 +238,11 @@ function telegramVisibleTextLength(text: string): number {
     .replace(/&amp;/g, '&').length;
 }
 
-export function renderTelegramMessage(draft: Draft, pageUrl: string): TelegramMessagePayload {
+export function renderTelegramMessage(
+  draft: Draft,
+  pageUrl: string,
+  feedbackEnabled = false,
+): TelegramMessagePayload {
   const score = draft.story.score ?? 0;
   const title = `<b><a href="${escapeHtml(originalUrl(draft))}">${escapeHtml(draft.summary.title)}</a></b> （★ ${score} 分${score >= 400 ? ' 🔥' : ''}）`;
   const tagLine = isScanCardSummary(draft.summary)
@@ -267,18 +274,38 @@ export function renderTelegramMessage(draft: Draft, pageUrl: string): TelegramMe
       prefer_large_media: true,
       show_above_text: false,
     },
+    ...(feedbackEnabled
+      ? {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '♡ 喜欢', callback_data: `d:like:${draft.story.id}` },
+                { text: '☆ 收藏', callback_data: `d:save:${draft.story.id}` },
+              ],
+            ],
+          },
+        }
+      : {}),
   };
 }
 
-export function renderTelegramDelivery(draft: Draft, pageUrl: string): TelegramDelivery {
+export function renderTelegramDelivery(
+  draft: Draft,
+  pageUrl: string,
+  feedbackEnabled = false,
+): TelegramDelivery {
   return {
     kind: 'text',
-    payload: renderTelegramMessage(draft, pageUrl),
+    payload: renderTelegramMessage(draft, pageUrl, feedbackEnabled),
   };
 }
 
-export function telegramMessageHash(draft: Draft, pageUrl: string): string {
+export function telegramMessageHash(
+  draft: Draft,
+  pageUrl: string,
+  feedbackEnabled = false,
+): string {
   return createHash('sha256')
-    .update(JSON.stringify(renderTelegramDelivery(draft, pageUrl)))
+    .update(JSON.stringify(renderTelegramDelivery(draft, pageUrl, feedbackEnabled)))
     .digest('hex');
 }
