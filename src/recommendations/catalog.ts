@@ -34,12 +34,14 @@ export class ReadingCatalog {
       if (publication.state !== 'published' || !publication.page) continue;
       const { story, article } = publication.draft;
       if ((story.score ?? 0) < 150 || article.source === 'unavailable') continue;
-      const existing = this.store.article(story.id);
-      if (existing?.summaryUrl === publication.page.url) continue;
-      this.store.saveArticle(articleFromPublication(publication));
-      this.store.saveSource(story.id, article);
+      syncPublishedArticle(this.store, publication);
     }
   }
+}
+
+export function syncPublishedArticle(store: ReadingStore, publication: Publication): void {
+  store.saveArticle(articleFromPublication(publication));
+  store.saveSource(publication.draft.story.id, publication.draft.article);
 }
 
 export function articleFromPublication(publication: Publication): ReadingArticle {
