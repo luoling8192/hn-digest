@@ -7,17 +7,166 @@ import type { JsonHttpClient } from '../src/http-client.js';
 import { type LogFields, silentLogger } from '../src/logger.js';
 import { config, draft, story, summary } from './fixtures.js';
 
+function generatedSummary(summary: Summary) {
+  return {
+    ...summary,
+    rewrite: summary.rewrite ?? {
+      sections: summary.article.map((section) => ({ ...section, imageIds: [] })),
+    },
+  };
+}
+
 function completion(summary: Summary): unknown {
   return {
     choices: [
       {
-        message: { content: JSON.stringify(summary) },
+        message: { content: JSON.stringify(generatedSummary(summary)) },
         finish_reason: 'stop',
       },
     ],
     usage: { prompt_tokens: 100, completion_tokens: 200 },
   };
 }
+
+test('channel preview retains a separate source rewrite and supplied image references', async () => {
+  const rewritten = {
+    ...summary,
+    rewrite: {
+      sections: [{ heading: '芯片结构', paragraphs: ['原文的详细解释。'], imageIds: ['image-1'] }],
+    },
+  };
+  const source = {
+    ...draft.article,
+    media: {
+      coverImage: 'https://example.com/chip.jpg',
+      images: [{ id: 'image-1', url: 'https://example.com/chip.jpg', caption: '芯片结构' }],
+    },
+  };
+  let instructions = '';
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async (_url, _service, init) => {
+        const request = JSON.parse(String(init?.body));
+        instructions = request.messages[0].content;
+        assert.ok(request.response_format.json_schema.schema.required.includes('rewrite'));
+        assert.deepEqual(JSON.parse(request.messages[1].content).article.media, source.media);
+        return completion(rewritten);
+      },
+    },
+    silentLogger,
+  );
+  const result = await summarizer.summarize(story, source, draft.comments, []);
+  assert.ok('rewrite' in result.summary);
+  assert.deepEqual(result.summary.rewrite, rewritten.rewrite);
+  assert.match(instructions, /rewrite.*Instant View/s);
+  assert.match(instructions, /imageIds/);
+});
+
+test('new model output must include rewrite even though historical summaries may omit it', async () => {
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => ({
+        choices: [{ message: { content: JSON.stringify(summary) }, finish_reason: 'stop' }],
+      }),
+    },
+    silentLogger,
+  );
+  await assert.rejects(
+    summarizer.summarize(story, draft.article, draft.comments, [], false),
+    /rewrite/,
+  );
+});
+
+test('low-value comment samples may be omitted instead of filling the digest', async () => {
+  const comments = [
+    { id: 124, parent: story.id, author: 'alice', text: 'Thanks for writing this!' },
+    { id: 125, parent: story.id, author: 'bob', text: 'Please cover multiplication next.' },
+    { id: 126, parent: story.id, author: 'carol', text: 'A small typo in the third paragraph.' },
+  ];
+  const selected: Summary = { ...summary, discussion: [] };
+  let calls = 0;
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => {
+        calls++;
+        return completion(selected);
+      },
+    },
+    silentLogger,
+  );
+
+  const result = await summarizer.summarize(story, draft.article, comments, []);
+  assert.deepEqual(result.summary.discussion, []);
+  assert.deepEqual(result.comments, comments);
+  assert.equal(calls, 1);
+});
+
+test('readable article and HN text sources require a nonempty rewrite', async () => {
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () => completion({ ...summary, rewrite: { sections: [] } }),
+    },
+    silentLogger,
+  );
+
+  for (const source of ['article', 'hn-text'] as const) {
+    await assert.rejects(
+      summarizer.summarize(story, { ...draft.article, source }, draft.comments, [], false),
+      /omitted the readable article rewrite/,
+    );
+  }
+});
+
+test('sources without readable text allow an empty rewrite', async () => {
+  const empty: Summary = {
+    ...summary,
+    quickTake: '原文正文暂时无法获取。',
+    article: [],
+    discussion: [],
+    rewrite: { sections: [] },
+  };
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    { request: async () => completion(empty) },
+    silentLogger,
+  );
+
+  for (const source of ['article', 'hn-text', 'unavailable'] as const) {
+    const result = await summarizer.summarize(
+      story,
+      { text: ' \n ', source, readingMinutes: null },
+      [],
+      [],
+      false,
+    );
+    assert.ok('rewrite' in result.summary);
+    assert.deepEqual(result.summary.rewrite, { sections: [] });
+  }
+});
+
+test('a rewrite cannot cite an image absent from the retrieved article', async () => {
+  const summarizer = new OpenRouterSummarizer(
+    config,
+    {
+      request: async () =>
+        completion({
+          ...summary,
+          rewrite: {
+            sections: [{ heading: null, paragraphs: ['原文详细内容'], imageIds: ['invented'] }],
+          },
+        }),
+    },
+    silentLogger,
+  );
+  await assert.rejects(
+    summarizer.summarize(story, draft.article, draft.comments, [], false),
+    /unavailable image/,
+  );
+});
 
 test('biodiversity report does not repeat HN discussion under the article summary', async () => {
   const discussion =
@@ -287,11 +436,11 @@ test('channel summaries repair unsupported consensus by default once without rel
   );
   const result = await summarizer.summarize(story, draft.article, draft.comments, []);
   assert.equal(requests.length, 2);
-  assert.deepEqual(result.summary, summary);
+  assert.deepEqual(result.summary, generatedSummary(summary));
   const correction = JSON.parse(requests[1] ?? '').messages;
   assert.match(correction.at(-1).content, /unsupported comment consensus/);
   assert.equal(correction.at(-2).role, 'assistant');
-  assert.deepEqual(JSON.parse(correction.at(-2).content), invalid);
+  assert.deepEqual(JSON.parse(correction.at(-2).content), generatedSummary(invalid));
 
   let invalidCalls = 0;
   const rejections: LogFields[] = [];

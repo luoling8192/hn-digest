@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Config } from '../config.js';
 import type { Draft, Page } from '../domain.js';
 import { DeliveryRejectedError, DeliveryUncertainError } from '../errors.js';
-import { renderTelegramMessage } from '../presentation.js';
+import { renderTelegramDelivery } from '../presentation.js';
 
 const envelopeSchema = z.object({
   ok: z.boolean(),
@@ -22,9 +22,10 @@ export class TelegramClient {
   ) {}
 
   async send(draft: Draft, page: Page): Promise<number> {
+    const delivery = renderTelegramDelivery(draft, page.url);
     const result = await this.call('sendMessage', {
       chat_id: this.config.TELEGRAM_CHAT_ID,
-      ...renderTelegramMessage(draft, page.url),
+      ...delivery.payload,
     });
     const parsed = messageSchema.safeParse(result);
     if (!parsed.success) {
@@ -34,10 +35,12 @@ export class TelegramClient {
   }
 
   async edit(draft: Draft, page: Page, messageId: number): Promise<void> {
+    const delivery = renderTelegramDelivery(draft, page.url);
     await this.call('editMessageText', {
       chat_id: this.config.TELEGRAM_CHAT_ID,
       message_id: messageId,
-      ...renderTelegramMessage(draft, page.url),
+      ...delivery.payload,
+      reply_markup: { inline_keyboard: [] },
     });
   }
 
