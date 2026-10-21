@@ -662,6 +662,7 @@ export class ReadingService {
   }
 
   private articlesFor(batch: Batch): ReadingArticle[] {
+    if (batch.kind === 'saved') this.channelFeedback?.refreshSavedArticles(batch.articleIds);
     return batch.articleIds.map((id) => {
       const article = this.store.article(id);
       if (!article) throw new Error('Reading article missing');

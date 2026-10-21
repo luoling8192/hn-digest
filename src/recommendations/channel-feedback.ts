@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Publication } from '../domain.js';
 import { PublicationConflictError, StoryNotFoundError } from '../errors.js';
 import type { PublicationRepository } from '../storage/publication-repository.js';
-import { articleFromPublication } from './catalog.js';
+import { syncPublishedArticle } from './catalog.js';
 import { newReader } from './model.js';
 import { feedbackFor } from './ranking.js';
 import type { ReadingTransport, ReadingUpdate } from './service.js';
@@ -69,6 +69,14 @@ export class ChannelFeedback {
 
   accepts(update: ReadingUpdate): boolean {
     return this.interaction(update) !== null;
+  }
+
+  refreshSavedArticles(storyIds: number[]): void {
+    for (const storyId of storyIds) {
+      const publication = this.options.publications.getPublication(storyId);
+      if (publication?.state !== 'published' || !publication.page) continue;
+      syncPublishedArticle(this.store, publication);
+    }
   }
 
   async handle(update: ReadingUpdate): Promise<void> {
@@ -154,8 +162,7 @@ export class ChannelFeedback {
       }
       feedback.revision += 1;
       reader.feedback[storyId] = feedback;
-      this.store.saveArticle(articleFromPublication(publication));
-      this.store.saveSource(storyId, publication.draft.article);
+      syncPublishedArticle(this.store, publication);
       this.store.saveReader(reader);
       this.store.put(key, { userId, storyId, messageId, action, text });
     });
