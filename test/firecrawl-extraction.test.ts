@@ -29,7 +29,7 @@ test('Firecrawl is the only remote extraction service and receives its own API k
     assert.equal(init?.redirect, 'error');
     assert.deepEqual(JSON.parse(String(init?.body)), {
       url: 'https://example.com/story',
-      formats: ['markdown'],
+      formats: ['markdown', 'html'],
       onlyMainContent: true,
       proxy: 'auto',
       waitFor: 1500,

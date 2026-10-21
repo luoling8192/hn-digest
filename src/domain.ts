@@ -28,6 +28,20 @@ export const articleSchema = z.object({
   source: z.enum(['article', 'hn-text', 'unavailable']),
   readingMinutes: z.number().int().positive().nullable(),
   failureCode: z.string().min(1).max(80).optional(),
+  media: z
+    .object({
+      coverImage: z.url().max(4_096).nullable(),
+      images: z
+        .array(
+          z.object({
+            id: z.string().min(1).max(80),
+            url: z.url().max(4_096),
+            caption: z.string().max(1_000),
+          }),
+        )
+        .max(8),
+    })
+    .optional(),
 });
 
 const articleSectionSchema = z.object({
@@ -88,6 +102,19 @@ export const summarySchema = z.object({
     .array(articleSectionSchema.extend({ heading: z.string().min(1).max(80).nullable() }))
     .max(12),
   discussion: z.array(discussionSectionSchema.omit({ heading: true })).max(12),
+  rewrite: z
+    .object({
+      sections: z
+        .array(
+          z.object({
+            heading: z.string().min(1).max(80).nullable(),
+            paragraphs: z.array(z.string().min(1).max(2_500)).min(1).max(8),
+            imageIds: z.array(z.string().min(1).max(80)).max(8),
+          }),
+        )
+        .max(16),
+    })
+    .optional(),
 });
 
 const persistedScanCardSummarySchema = legacySummarySchema.extend({

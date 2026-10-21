@@ -1,21 +1,29 @@
+import { createHash } from 'node:crypto';
 import { lookup } from 'node:dns';
 import ipaddr from 'ipaddr.js';
+import { JSDOM } from 'jsdom';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
 import type { Article, HackerNewsItem } from '../domain.js';
 import { ApplicationError, errorCode, RemoteHttpError } from '../errors.js';
 import type { Logger } from '../logger.js';
-import { htmlToPlainText } from './hacker-news.js';
 import {
   looksLikeChallengePage,
   withoutMediumResponses,
   withoutReutersFooter,
 } from './article-quality.js';
+import { htmlToPlainText } from './hacker-news.js';
 
 const MAX_DOWNLOAD_BYTES = 3_000_000;
 const MAX_SUMMARY_CHARACTERS = 45_000;
 const MIN_ARTICLE_CHARACTERS = 200;
 const FIRECRAWL_URL = 'https://api.firecrawl.dev/v2/scrape';
+const MAX_ARTICLE_IMAGES = 8;
+
+interface ScrapedArticle {
+  text: string;
+  media: NonNullable<Article['media']>;
+}
 
 type Fetcher = (
   input: string | URL,
@@ -111,8 +119,8 @@ export class ArticleExtractor {
     const fields = { storyId: story.id, host: url.hostname, method: 'firecrawl' };
     this.logger.info('article_fetch_started', fields);
     try {
-      const text = await this.scrape(url, story.id);
-      const article = articleFromText(text);
+      const { text, media } = await this.scrape(url, story.id);
+      const article = articleFromText(text, media);
       this.logger.info('article_fetch_succeeded', {
         ...fields,
         durationMs: Date.now() - startedAt,
@@ -135,7 +143,7 @@ export class ArticleExtractor {
     }
   }
 
-  private async scrape(url: URL, storyId: number): Promise<string> {
+  private async scrape(url: URL, storyId: number): Promise<ScrapedArticle> {
     if (this.retryAt > this.runtime.now()) {
       throw new RemoteHttpError(
         'firecrawl',
@@ -151,7 +159,7 @@ export class ArticleExtractor {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({
         url: url.href,
-        formats: ['markdown'],
+        formats: ['markdown', 'html'],
         onlyMainContent: true,
         proxy: 'auto',
         waitFor: 1_500,
@@ -178,7 +186,13 @@ export class ArticleExtractor {
         success: z.literal(true),
         data: z.object({
           markdown: z.string(),
-          metadata: z.object({ statusCode: z.number().int(), title: z.string().optional() }),
+          html: z.string().optional(),
+          metadata: z.object({
+            statusCode: z.number().int(),
+            title: z.string().optional(),
+            ogImage: z.unknown().optional(),
+            sourceURL: z.unknown().optional(),
+          }),
         }),
       })
       .parse(JSON.parse(raw.toString('utf8')));
@@ -188,7 +202,11 @@ export class ArticleExtractor {
     validateArticleText(result.data.markdown, result.data.metadata.title);
     const text = withoutReutersFooter(withoutMediumResponses(result.data.markdown), url);
     validateArticleText(text, result.data.metadata.title);
-    return text;
+    const baseUrl = publicImageUrl(result.data.metadata.sourceURL, url) ?? url.href;
+    return {
+      text,
+      media: extractMedia(result.data.html ?? '', new URL(baseUrl), result.data.metadata.ogImage),
+    };
   }
 }
 
@@ -204,12 +222,75 @@ function retryAfterSeconds(
   return Number.isFinite(date) ? Math.max(0, Math.ceil((date - now) / 1000)) : undefined;
 }
 
-function articleFromText(text: string): Article {
+function articleFromText(text: string, media: NonNullable<Article['media']>): Article {
   return {
     text: text.slice(0, MAX_SUMMARY_CHARACTERS),
     source: 'article',
     readingMinutes: estimateReadingMinutes(text),
+    media,
   };
+}
+
+function publicImageUrl(raw: unknown, baseUrl: URL): string | null {
+  if (typeof raw !== 'string' || !raw.trim() || raw.length > 4_096) return null;
+  try {
+    const url = parsePublicHttpUrl(new URL(raw, baseUrl).href);
+    if (url.href.length > 4_096) return null;
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return null;
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function extractMedia(html: string, baseUrl: URL, ogImage: unknown): NonNullable<Article['media']> {
+  const dom = new JSDOM(html);
+  const document = dom.window.document;
+  const images: NonNullable<Article['media']>['images'] = [];
+  const seen = new Set<string>();
+  const metadataCover = publicImageUrl(ogImage, baseUrl);
+  const htmlCover = publicImageUrl(
+    document.querySelector('meta[property="og:image"]')?.getAttribute('content'),
+    baseUrl,
+  );
+
+  for (const image of document.querySelectorAll('img')) {
+    if (images.length >= MAX_ARTICLE_IMAGES) break;
+    if (image.closest('nav,header,footer,aside,[aria-hidden="true"]')) continue;
+    const dimensions = [image.getAttribute('width'), image.getAttribute('height')]
+      .filter((value) => value !== null)
+      .map((value) => Number.parseFloat(value));
+    if (dimensions.some((value) => Number.isFinite(value) && value < 64)) continue;
+    const url =
+      publicImageUrl(image.getAttribute('src'), baseUrl) ??
+      publicImageUrl(image.getAttribute('data-src'), baseUrl);
+    if (!url || seen.has(url)) continue;
+    const identity = `${new URL(url).pathname} ${image.id} ${image.className}`;
+    if (
+      /(?:^|[\s/_.-])(?:favicon|icon|logo|avatar|pixel|tracking|beacon)(?:[\s/_.-]|$)/i.test(
+        identity,
+      )
+    )
+      continue;
+    const caption = (
+      image.closest('figure')?.querySelector('figcaption')?.textContent ||
+      image.getAttribute('alt') ||
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1_000);
+    seen.add(url);
+    images.push({
+      id: `image-${createHash('sha256').update(url).digest('hex').slice(0, 12)}`,
+      url,
+      caption,
+    });
+  }
+  dom.window.close();
+  return { coverImage: metadataCover ?? htmlCover ?? images[0]?.url ?? null, images };
 }
 
 async function readLimitedBody(
