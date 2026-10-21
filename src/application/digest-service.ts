@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { hashComments } from '../adapters/hacker-news.js';
 import type { Config } from '../config.js';
 import type {
   Article,
@@ -22,13 +23,12 @@ import {
   ApplicationError,
   ConcurrentRunError,
   DeliveryRejectedError,
+  errorCode,
   PublicationConflictError,
   StoryNotFoundError,
   UnreadableStoryError,
-  errorCode,
 } from '../errors.js';
 import type { Logger } from '../logger.js';
-import { hashComments } from '../adapters/hacker-news.js';
 import { telegramMessageHash } from '../presentation.js';
 import type { PublicationRepository } from '../storage/publication-repository.js';
 
@@ -365,7 +365,11 @@ export class DigestService {
       messageId,
       publishedAt: now,
       updatedAt: now,
-      messageHash: telegramMessageHash(sending.draft, page.url),
+      messageHash: telegramMessageHash(
+        sending.draft,
+        page.url,
+        this.config.TELEGRAM_OWNER_ID !== undefined,
+      ),
     };
     this.repository.savePublication(published);
     this.repository.clearFailure(published.id);
@@ -473,7 +477,11 @@ export class DigestService {
         if (!page || messageId === null)
           throw new Error('Published delivery identifiers are missing');
         phase = 'edit_message';
-        const messageHash = telegramMessageHash(current.draft, page.url);
+        const messageHash = telegramMessageHash(
+          current.draft,
+          page.url,
+          this.config.TELEGRAM_OWNER_ID !== undefined,
+        );
         if (messageHash !== current.messageHash) {
           await this.dependencies.editMessage(current.draft, page, messageId);
           this.repository.savePublication({ ...current, messageHash });
@@ -547,7 +555,11 @@ export class DigestService {
     const page = current.page;
     const messageId = current.messageId;
     if (!page || messageId === null) throw new Error('Published delivery identifiers are missing');
-    const messageHash = telegramMessageHash(current.draft, page.url);
+    const messageHash = telegramMessageHash(
+      current.draft,
+      page.url,
+      this.config.TELEGRAM_OWNER_ID !== undefined,
+    );
     if (messageHash !== current.messageHash) {
       await this.dependencies.editMessage(current.draft, page, messageId);
       current = { ...current, messageHash };

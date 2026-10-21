@@ -1,23 +1,27 @@
 import { ArticleExtractor } from './adapters/article-extractor.js';
 import { HackerNewsClient } from './adapters/hacker-news.js';
 import { OpenRouterSummarizer } from './adapters/openrouter-summarizer.js';
-import { TelegraphClient } from './adapters/telegraph.js';
 import { TelegramClient } from './adapters/telegram.js';
+import { TelegraphClient } from './adapters/telegraph.js';
 import { createAdminServer } from './admin-server.js';
-import { DigestService, type DigestDependencies } from './application/digest-service.js';
+import { type DigestDependencies, DigestService } from './application/digest-service.js';
 import { DigestScheduler } from './application/scheduler.js';
 import { readConfig } from './config.js';
 import { FetchJsonHttpClient } from './http-client.js';
 import { jsonLogger } from './logger.js';
-import { SqlitePublicationRepository } from './storage/sqlite-publication-repository.js';
-import { ReadingStore } from './recommendations/store.js';
-import { ReadingCatalog } from './recommendations/catalog.js';
-import { ReadingBackfill } from './recommendations/backfill.js';
 import { OpenRouterReadingAssistant } from './recommendations/assistant.js';
-import { ReadingService } from './recommendations/service.js';
-import { ReadingPoller } from './recommendations/poller.js';
+import { ReadingBackfill } from './recommendations/backfill.js';
+import { ReadingCatalog } from './recommendations/catalog.js';
+import {
+  bindChannelFeedbackPreview,
+  type ChannelFeedbackOptions,
+} from './recommendations/channel-feedback.js';
 import { DeepReading } from './recommendations/deep-reading.js';
+import { ReadingPoller } from './recommendations/poller.js';
+import { ReadingService } from './recommendations/service.js';
 import { operationsPanel } from './recommendations/status.js';
+import { ReadingStore } from './recommendations/store.js';
+import { SqlitePublicationRepository } from './storage/sqlite-publication-repository.js';
 
 const config = readConfig();
 const repository = new SqlitePublicationRepository(config.DATA_DIR);
@@ -48,6 +52,11 @@ const readingCatalog = readingStore ? new ReadingCatalog(readingStore, repositor
 const deepReading = readingStore
   ? new DeepReading(readingStore, hackerNews, summarizer, telegraph, jsonLogger)
   : undefined;
+const channelFeedback: ChannelFeedbackOptions = {
+  chatId: config.TELEGRAM_CHAT_ID,
+  publications: repository,
+  ...(config.TELEGRAM_PREVIEW_CHAT_ID ? { previewChatId: config.TELEGRAM_PREVIEW_CHAT_ID } : {}),
+};
 const readingService =
   config.TELEGRAM_OWNER_ID && readingStore && readingCatalog
     ? new ReadingService(
@@ -59,6 +68,7 @@ const readingService =
         Date.now,
         deepReading,
         (view) => operationsPanel(service, readingBackfill, view),
+        channelFeedback,
       )
     : null;
 const readingPoller =
@@ -91,6 +101,13 @@ const server = createAdminServer({
     inventory: readingBackfill?.status() ?? null,
     access: readingService?.accessStatus() ?? null,
   }),
+  channelFeedbackEnabled: readingService !== null,
+  ...(readingStore && config.TELEGRAM_PREVIEW_CHAT_ID
+    ? {
+        bindChannelPreview: (storyId: number, messageId: number) =>
+          bindChannelFeedbackPreview(channelFeedback, readingStore, storyId, messageId),
+      }
+    : {}),
   ...(readingService ? { sendReadingPreview: () => readingService.sendPreview() } : {}),
 });
 server.requestTimeout = 180_000;

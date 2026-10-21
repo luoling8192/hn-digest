@@ -1,20 +1,21 @@
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { escapeHtml } from '../presentation.js';
+import { ReadingAccess } from './access.js';
 import type { ReadingAssistant } from './assistant.js';
+import { ChannelFeedback, type ChannelFeedbackOptions } from './channel-feedback.js';
+import type { DeepReader } from './deep-reading.js';
 import {
-  newReader,
   type Batch,
+  newReader,
   type Reader,
   type ReadingArticle,
   type ReadingCommand,
 } from './model.js';
-import { readingMessage, renderBatch, type ReadingMessage } from './presentation.js';
+import { type ReadingMessage, readingMessage, renderBatch } from './presentation.js';
 import { feedbackFor, recommend } from './ranking.js';
-import type { ReadingStore } from './store.js';
-import type { DeepReader } from './deep-reading.js';
 import type { StatusView } from './status.js';
-import { ReadingAccess } from './access.js';
+import type { ReadingStore } from './store.js';
 
 const userSchema = z.object({ id: z.number().int().positive(), is_bot: z.boolean() });
 const messageSchema = z.object({
@@ -45,10 +46,14 @@ export interface Catalog {
 }
 const sentSchema = z.object({ message_id: z.number().int().positive() });
 type FeedbackAction = 'save' | 'like' | 'less' | 'unsave';
+const savedCommand = /^(\/saved(?:@\w+)?|我的收藏|收藏夹)$/;
+const publicCommand =
+  /^(\/start(?:@\w+)?(?:\s.*)?|\/help(?:@\w+)?|帮助|\/saved(?:@\w+)?|我的收藏|收藏夹)$/;
 
 export class ReadingService {
   private operation: Promise<void> = Promise.resolve();
   private readonly access: ReadingAccess;
+  private readonly channelFeedback: ChannelFeedback | undefined;
   constructor(
     readonly ownerId: number,
     private readonly store: ReadingStore,
@@ -58,24 +63,42 @@ export class ReadingService {
     private readonly now: () => number = Date.now,
     private readonly deepReader?: DeepReader,
     private readonly statusPanel?: (view: StatusView) => ReadingMessage,
+    channelFeedback?: ChannelFeedbackOptions,
   ) {
     this.access = new ReadingAccess(ownerId, store, transport);
+    this.channelFeedback = channelFeedback
+      ? new ChannelFeedback(channelFeedback, store, transport, now)
+      : undefined;
   }
 
   accepts(update: ReadingUpdate): boolean {
+    if (update.callback_query?.data?.startsWith('d:')) {
+      return this.channelFeedback?.accepts(update) === true;
+    }
     const from = update.callback_query?.from ?? update.message?.from;
     const message = update.callback_query?.message ?? update.message;
     return (
       from !== undefined &&
-      (this.access.allowed(from.id) || update.message?.text?.trim() === '/id') &&
       !from.is_bot &&
       message?.chat.type === 'private' &&
-      message.chat.id === from.id
+      message.chat.id === from.id &&
+      (this.access.allowed(from.id) ||
+        update.message?.text?.trim() === '/id' ||
+        publicCommand.test(update.message?.text?.trim() ?? '') ||
+        this.publicSavedCallback(update, from.id) !== null)
     );
+  }
+
+  isImmediate(update: ReadingUpdate): boolean {
+    return update.callback_query?.data?.startsWith('d:') === true && this.accepts(update);
   }
 
   async handle(update: ReadingUpdate): Promise<void> {
     if (!this.accepts(update)) return;
+    if (update.callback_query?.data?.startsWith('d:')) {
+      await this.channelFeedback?.handle(update);
+      return;
+    }
     const text = update.message?.text?.trim();
     const callback = update.callback_query;
     const userId = callback?.from.id ?? update.message?.from?.id;
@@ -108,7 +131,49 @@ export class ReadingService {
     }
     return this.serial(async () => {
       if (this.access.allowed(userId)) await this.handleAuthorized(update, userId);
+      else await this.handlePublic(update, userId);
     });
+  }
+
+  private publicSavedCallback(update: ReadingUpdate, userId: number) {
+    const callback = update.callback_query;
+    const match = callback?.data?.match(
+      /^r:([a-f0-9]{12}):(select(?::[1-5])|clear|unsave|undo|saved|next|prev)$/,
+    );
+    if (!match || !callback?.message) return null;
+    const batch = this.store.batch(match[1] ?? '');
+    if (
+      batch?.kind !== 'saved' ||
+      batch.userId !== userId ||
+      batch.messageId !== callback.message.message_id
+    )
+      return null;
+    const [action, number] = (match[2] ?? '').split(':');
+    return { batch, action: action ?? '', number: number ? Number(number) : null };
+  }
+
+  private async handlePublic(update: ReadingUpdate, userId: number): Promise<void> {
+    const reader = this.store.reader(userId) ?? newReader(userId);
+    const callback = this.publicSavedCallback(update, userId);
+    if (callback && update.callback_query) {
+      await this.transport.call('answerCallbackQuery', {
+        callback_query_id: update.callback_query.id,
+      });
+      await this.handleButton(reader, callback.batch, callback.action, callback.number);
+      return;
+    }
+    const text = update.message?.text?.trim() ?? '';
+    if (savedCommand.test(text)) {
+      await this.showSaved(reader, 0);
+    } else if (publicCommand.test(text)) {
+      await this.send(
+        reader,
+        readingMessage(
+          '欢迎使用 Hacker News 速读。\n\n在频道文章下点击“喜欢”或“收藏”，再次点击即可取消。每个人的状态分别保存。\n发送 /saved 或“我的收藏”查看收藏，并可移出或撤销操作。\n\n喜欢和收藏向所有读者开放；AI 推荐、深入阅读和偏好调整需要管理员开通。',
+        ),
+        true,
+      );
+    }
   }
 
   async sendPreview(): Promise<void> {
@@ -156,6 +221,11 @@ export class ReadingService {
     if (update.callback_query) {
       const callback = update.callback_query;
       await this.transport.call('answerCallbackQuery', { callback_query_id: callback.id });
+      if (!this.access.allowed(userId)) {
+        const saved = this.publicSavedCallback(update, userId);
+        if (saved) await this.handleButton(reader, saved.batch, saved.action, saved.number);
+        return;
+      }
       const match = callback.data?.match(/^r:([a-f0-9]{12}):([a-z]+)(?::([1-5]))?$/);
       if (!match || !callback.message) return;
       const batch = this.store.batch(match[1] ?? '');
@@ -183,7 +253,7 @@ export class ReadingService {
       : reader.latestBatch
         ? this.store.batch(reader.latestBatch)
         : null;
-    if (/^\/start(?:\s.*)?$/.test(text)) {
+    if (/^\/start(?:@\w+)?(?:\s.*)?$/.test(text)) {
       await this.send(
         reader,
         readingMessage(
@@ -206,7 +276,7 @@ export class ReadingService {
       await this.sendRecommendations(reader);
       return;
     }
-    if (/^(\/saved|我的收藏|收藏夹)$/.test(text)) {
+    if (savedCommand.test(text)) {
       await this.showSaved(reader, 0);
       return;
     }
@@ -214,7 +284,7 @@ export class ReadingService {
       await this.showPreferences(reader);
       return;
     }
-    if (/^(\/help|帮助)$/.test(text)) {
+    if (/^(\/help(?:@\w+)?|帮助)$/.test(text)) {
       await this.send(
         reader,
         readingMessage(
@@ -237,7 +307,9 @@ export class ReadingService {
       if (focused) articles.push(focused);
     }
     await this.transport.call('sendChatAction', { chat_id: reader.userId, action: 'typing' });
+    if (!this.access.allowed(userId)) return;
     const command = await this.assistant.understand(text, reader, articles);
+    if (!this.access.allowed(userId)) return;
     await this.executeCommand(reader, batch, command, text);
     reader.history = [
       ...reader.history,
@@ -248,15 +320,34 @@ export class ReadingService {
   }
 
   async reportFailure(update?: ReadingUpdate): Promise<void> {
+    if (update?.callback_query?.message?.chat.type === 'channel') {
+      await this.transport.call('answerCallbackQuery', {
+        callback_query_id: update.callback_query.id,
+        text: '操作状态可能已保存，请私聊 Bot 发送 /saved 核对；再次点击会切换状态。',
+        show_alert: true,
+      });
+      return;
+    }
     const userId = update
       ? (update.callback_query?.from.id ?? update.message?.from?.id)
       : this.ownerId;
-    if (userId === undefined || !this.access.allowed(userId)) return;
+    if (userId === undefined || (update && !this.accepts(update))) return;
+    const allowed = this.access.allowed(userId);
+    if (
+      !allowed &&
+      (!update ||
+        (!savedCommand.test(update.message?.text?.trim() ?? '') &&
+          this.publicSavedCallback(update, userId) === null))
+    )
+      return;
     await this.send(
       newReader(userId),
       readingMessage(
-        '这次操作没有完整完成。可以重试按钮，或发送“推荐”重新获取；已经保存的收藏会保留。',
+        allowed
+          ? '这次操作没有完整完成。可以重试按钮，或发送“推荐”重新获取；已经保存的收藏会保留。'
+          : '这次操作没有完整完成。请发送 /saved 核对收藏；已经保存的收藏会保留。',
       ),
+      !allowed,
     );
   }
 
@@ -355,6 +446,7 @@ export class ReadingService {
           reader,
           readingMessage('正在整理这篇的完整摘要和 HN 讨论，通常需要几十秒。'),
         );
+        if (!this.access.allowed(reader.userId)) return;
         article = await this.deepReader.prepare(article);
         await this.edit(reader, batch);
       }
@@ -397,6 +489,8 @@ export class ReadingService {
   }
 
   private applyFeedback(reader: Reader, batch: Batch, action: FeedbackAction): void {
+    const current = this.store.reader(reader.userId);
+    if (current) reader.feedback = current.feedback;
     const undo: Batch['undo'] = [];
     for (const id of batch.selected) {
       const before = feedbackFor(reader, id);
@@ -431,6 +525,8 @@ export class ReadingService {
   }
 
   private undoFeedback(reader: Reader, batch: Batch): void {
+    const current = this.store.reader(reader.userId);
+    if (current) reader.feedback = current.feedback;
     let restored = 0;
     for (const entry of batch.undo) {
       if (feedbackFor(reader, entry.id).revision !== entry.revision) continue;
@@ -448,7 +544,9 @@ export class ReadingService {
   }
 
   private async sendRecommendations(reader: Reader): Promise<void> {
+    if (!this.access.allowed(reader.userId)) return;
     await this.catalog.refresh(reader);
+    if (!this.access.allowed(reader.userId)) return;
     const selected = recommend(reader, this.store.articles());
     if (!selected.length) {
       await this.send(
@@ -475,7 +573,11 @@ export class ReadingService {
       .sort((a, b) => b[1].savedAt - a[1].savedAt || Number(b[0]) - Number(a[0]))
       .map(([id]) => Number(id));
     if (!ids.length) {
-      await this.send(reader, readingMessage('还没有收藏。先发送“推荐”，选中编号后点“收藏”。'));
+      await this.send(
+        reader,
+        readingMessage('还没有收藏。到频道文章下点击“收藏”，再发送 /saved 查看。'),
+        true,
+      );
       return;
     }
     const boundedPage = Math.min(page, Math.floor((ids.length - 1) / 5));
@@ -511,7 +613,11 @@ export class ReadingService {
 
   private async deliverBatch(reader: Reader, batch: Batch): Promise<void> {
     this.store.saveBatch(batch);
-    batch.messageId = await this.send(reader, renderBatch(batch, reader, this.articlesFor(batch)));
+    batch.messageId = await this.send(
+      reader,
+      renderBatch(batch, reader, this.articlesFor(batch), this.access.allowed(reader.userId)),
+      batch.kind === 'saved',
+    );
     reader.latestBatch = batch.id;
     if (batch.kind === 'recommendations')
       reader.seen = [...new Set([...reader.seen, ...batch.articleIds])].slice(-2000);
@@ -548,7 +654,11 @@ export class ReadingService {
   }
 
   private async askToFinishSelection(reader: Reader): Promise<void> {
-    await this.send(reader, readingMessage('当前清单还有选中的文章，请先执行操作或点“取消选择”。'));
+    await this.send(
+      reader,
+      readingMessage('当前清单还有选中的文章，请先执行操作或点“取消选择”。'),
+      true,
+    );
   }
 
   private articlesFor(batch: Batch): ReadingArticle[] {
@@ -559,20 +669,25 @@ export class ReadingService {
     });
   }
 
-  private async send(reader: Reader, message: ReadingMessage): Promise<number> {
-    if (!this.access.allowed(reader.userId)) throw new Error('Reading access revoked');
+  private async send(
+    reader: Reader,
+    message: ReadingMessage,
+    publicAccess = false,
+  ): Promise<number> {
+    if (!publicAccess && !this.access.allowed(reader.userId))
+      throw new Error('Reading access revoked');
     return sentSchema.parse(
       await this.transport.call('sendMessage', { chat_id: reader.userId, ...message }),
     ).message_id;
   }
 
   private async edit(reader: Reader, batch: Batch): Promise<void> {
-    if (!this.access.allowed(reader.userId)) return;
+    if (batch.kind !== 'saved' && !this.access.allowed(reader.userId)) return;
     if (!batch.messageId) return;
     await this.transport.call('editMessageText', {
       chat_id: reader.userId,
       message_id: batch.messageId,
-      ...renderBatch(batch, reader, this.articlesFor(batch)),
+      ...renderBatch(batch, reader, this.articlesFor(batch), this.access.allowed(reader.userId)),
     });
   }
 }
