@@ -47,6 +47,14 @@ export class ChannelFeedbackSync {
       const { storyId, revision } = pending;
       const publication = this.options.publications.getPublication(storyId);
       if (
+        (publication?.state === 'sending' || publication?.state === 'uncertain') &&
+        publication.id === storyId &&
+        publication.draft.story.id === storyId
+      ) {
+        this.retryAt.set(storyId, this.now() + 30_000);
+        continue;
+      }
+      if (
         publication?.state !== 'published' ||
         !publication.page ||
         !publication.messageId ||

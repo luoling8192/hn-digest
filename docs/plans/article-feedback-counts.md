@@ -15,5 +15,5 @@ Show `♡ 喜欢 N` and `☆ 收藏 N` on channel articles, counting each accoun
 
 - [x] Implement persisted aggregate counts and synchronized channel buttons.
 - [x] Remove the separate original-URL line and preserve title navigation.
-- [x] Verify toggles, private feedback/undo, concurrent requests, failures, restart and shutdown (230 tests and local browser interaction).
+- [x] Verify toggles, private feedback/undo, concurrent requests, failures, restart and shutdown (231 tests and local browser interaction).
 - [ ] Verify layout in browser fixtures, then publish and inspect real dev-channel clicks in Telegram.

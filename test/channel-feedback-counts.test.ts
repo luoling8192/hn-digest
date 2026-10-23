@@ -577,3 +577,39 @@ test('aborting a counter sync cancels its Telegram request without acknowledging
     h.cleanup();
   }
 });
+
+test('feedback persisted while a publication is sending or uncertain stays pending until the canonical message is published', async () => {
+  for (const state of ['sending', 'uncertain'] as const) {
+    const h = harness();
+    try {
+      await h.dispatch(channelClick('save'));
+      await h.dispatch(privateMessage('/saved'));
+      const batch = h.latest();
+      h.publications.savePublication({
+        ...h.publication,
+        state,
+        messageId: null,
+        publishedAt: null,
+      });
+      await h.dispatch(privateClick(batch, 'select:1'));
+      await h.dispatch(privateClick(batch, 'like'));
+      assert.deepEqual(h.store.feedbackCounts(storyId), { likes: 1, saves: 1 });
+      const pending = h.store.pendingFeedbackCounts();
+      assert.equal(pending.length, 1);
+      await h.service.syncFeedback();
+      assert.equal(h.edits().length, 0, state);
+      assert.deepEqual(h.store.pendingFeedbackCounts(), pending, state);
+      h.publications.savePublication(h.publication);
+      h.advance(29_999);
+      await h.service.syncFeedback();
+      assert.equal(h.edits().length, 0, state);
+      assert.deepEqual(h.store.pendingFeedbackCounts(), pending, state);
+      h.advance(1);
+      await h.service.syncFeedback();
+      h.assertDelivered(1, 1);
+      assert.deepEqual(h.store.pendingFeedbackCounts(), [], state);
+    } finally {
+      h.cleanup();
+    }
+  }
+});
