@@ -31,7 +31,7 @@ export class ChannelFeedbackSync {
       this.store.transaction(() => {
         for (const publication of this.options.publications.listPublications()) {
           if (publication.state === 'published' && publication.page && publication.messageId) {
-            this.store.markFeedbackCounts(publication.id);
+            this.store.markFeedbackCounts(publication.id, 'backfill');
           }
         }
         this.store.put(seedKey, true);

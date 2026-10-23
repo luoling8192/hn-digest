@@ -23,6 +23,7 @@ const feedbackCountsSchema = z.object({
 const feedbackSyncSchema = z.object({
   revision: identifierSchema,
   pending: z.boolean(),
+  priority: z.enum(['feedback', 'backfill']),
 });
 const keyedRowSchema = rowSchema.extend({ key: z.string() });
 const previewBindingSchema = z.object({ storyId: identifierSchema });
@@ -102,14 +103,18 @@ export class ReadingStore {
     );
   }
 
-  markFeedbackCounts(storyId: number): void {
+  markFeedbackCounts(storyId: number, priority: 'feedback' | 'backfill' = 'feedback'): void {
     identifierSchema.parse(storyId);
     this.transaction(() => {
       const key = `feedback-count-sync:${storyId}`;
       const previous = this.get(key, feedbackSyncSchema);
       this.put(
         key,
-        feedbackSyncSchema.parse({ revision: previous ? previous.revision + 1 : 1, pending: true }),
+        feedbackSyncSchema.parse({
+          revision: previous ? previous.revision + 1 : 1,
+          pending: true,
+          priority: previous?.pending && previous.priority === 'feedback' ? 'feedback' : priority,
+        }),
       );
     });
   }
@@ -117,7 +122,8 @@ export class ReadingStore {
   pendingFeedbackCounts(): Array<{ storyId: number; revision: number }> {
     return this.db
       .prepare(
-        "SELECT key,data FROM reading_state WHERE key LIKE 'feedback-count-sync:%' ORDER BY key",
+        `SELECT key,data FROM reading_state WHERE key LIKE 'feedback-count-sync:%'
+         ORDER BY CASE json_extract(data,'$.priority') WHEN 'feedback' THEN 0 ELSE 1 END, key`,
       )
       .all()
       .flatMap((raw) => {

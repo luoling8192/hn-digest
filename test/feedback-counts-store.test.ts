@@ -158,6 +158,52 @@ test('acknowledging an in-flight old revision preserves the newer pending change
   }
 });
 
+test('reader feedback jumps ahead of twenty-five pending historical backfill stories', () => {
+  const h = harness();
+  try {
+    for (let storyId = 100; storyId < 125; storyId++) {
+      h.store.markFeedbackCounts(storyId, 'backfill');
+    }
+    assert.deepEqual(h.store.pendingFeedbackCounts()[0], { storyId: 100, revision: 1 });
+    const reader = newReader(200);
+    reader.feedback[999] = { saved: true, opinion: 0, revision: 1, savedAt: 20 };
+    h.store.saveReader(reader);
+    assert.deepEqual(h.store.pendingFeedbackCounts()[0], { storyId: 999, revision: 1 });
+    reader.feedback[124] = { saved: false, opinion: 1, revision: 1, savedAt: 0 };
+    h.store.saveReader(reader);
+    assert.deepEqual(h.store.pendingFeedbackCounts().slice(0, 3), [
+      { storyId: 124, revision: 2 },
+      { storyId: 999, revision: 1 },
+      { storyId: 100, revision: 1 },
+    ]);
+  } finally {
+    h.close();
+  }
+});
+
+test('backfill cannot demote pending feedback and priority survives revision checks and restart', () => {
+  const h = harness();
+  try {
+    for (let storyId = 100; storyId < 125; storyId++) {
+      h.store.markFeedbackCounts(storyId, 'backfill');
+    }
+    h.store.markFeedbackCounts(999);
+    h.store.markFeedbackCounts(999, 'backfill');
+    h.store.ackFeedbackCounts(999, 1);
+    h.reopen();
+    assert.deepEqual(h.store.pendingFeedbackCounts()[0], { storyId: 999, revision: 2 });
+    h.store.ackFeedbackCounts(999, 2);
+    h.store.markFeedbackCounts(999, 'backfill');
+    h.reopen();
+    assert.deepEqual(h.store.pendingFeedbackCounts()[0], { storyId: 100, revision: 1 });
+    assert.deepEqual(h.store.pendingFeedbackCounts().at(-1), { storyId: 999, revision: 3 });
+    h.store.markFeedbackCounts(999, 'feedback');
+    assert.deepEqual(h.store.pendingFeedbackCounts()[0], { storyId: 999, revision: 4 });
+  } finally {
+    h.close();
+  }
+});
+
 test('outer rollback reverts feedback and its nested dirty mark together', () => {
   const h = harness();
   try {
