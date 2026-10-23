@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import type { Draft } from '../src/domain.js';
 import { publicationSchema, readyPublication, summarySchema } from '../src/domain.js';
 import {
+  channelFeedbackMarkup,
   renderTelegramDelivery,
   renderTelegramMessage,
   renderTelegraphPage,
@@ -17,22 +18,22 @@ function parsedTextLength(html: string): number {
   return text.length;
 }
 
-test('source and reading time use explicit labels on separate lines', () => {
+test('the headline opens the original without repeating its URL in the message body', () => {
   const url = 'https://www.righto.com/article?one=1&two=2';
   const message = renderTelegramMessage(
     { ...draft, story: { ...draft.story, url } },
     'https://telegra.ph/chinese-rewrite',
   );
   const document = new JSDOM(message.text).window.document;
-  const source = [...document.querySelectorAll('a')].find((node) => node.textContent === url);
-  assert.ok(source);
-  assert.equal(source.href, url);
-  assert.equal(source.textContent, url);
+  const sourceLinks = [...document.querySelectorAll('a')].filter((node) => node.href === url);
+  assert.equal(sourceLinks.length, 1);
+  assert.equal(sourceLinks[0]?.textContent, draft.summary.title);
+  assert.doesNotMatch(document.body.textContent ?? '', /🔗 原文|https:\/\/www\.righto\.com/);
   assert.equal(document.querySelector('b > a')?.getAttribute('href'), url);
   const footer = new JSDOM(message.text.split('</blockquote>')[1]).window.document;
   assert.equal(
     footer.body.textContent,
-    `🔗 原文：${url}\n⏱️ 阅读时间：约 3 分钟\n💬 HN 讨论 · 10 条\n\n#AI #编程语言`,
+    '⏱️ 阅读时间：约 3 分钟\n💬 HN 讨论 · 10 条\n\n#AI #编程语言',
   );
   assert.equal(message.link_preview_options.url, 'https://telegra.ph/chinese-rewrite');
   assert.equal('reply_markup' in message, false);
@@ -45,8 +46,8 @@ test('channel feedback adds only callbacks while reading remains in the native p
   assert.equal('reply_markup' in plain, false);
   assert.deepEqual(interactive.reply_markup?.inline_keyboard, [
     [
-      { text: '♡ 喜欢', callback_data: 'd:like:123' },
-      { text: '☆ 收藏', callback_data: 'd:save:123' },
+      { text: '♡ 喜欢 0', callback_data: 'd:like:123' },
+      { text: '☆ 收藏 0', callback_data: 'd:save:123' },
     ],
   ]);
   const pictured: Draft = {
@@ -62,6 +63,31 @@ test('channel feedback adds only callbacks while reading remains in the native p
   assert.notEqual(
     telegramMessageHash(draft, 'https://telegra.ph/test'),
     telegramMessageHash(draft, 'https://telegra.ph/test', true),
+  );
+});
+
+test('channel cards show aggregate likes and saves without changing personal button icons', () => {
+  const counts = { likes: 12, saves: 8 };
+  const markup = {
+    inline_keyboard: [
+      [
+        { text: '♡ 喜欢 12', callback_data: 'd:like:123' },
+        { text: '☆ 收藏 8', callback_data: 'd:save:123' },
+      ],
+    ],
+  };
+  assert.deepEqual(channelFeedbackMarkup(123, counts), markup);
+  assert.deepEqual(
+    renderTelegramMessage(draft, 'https://telegra.ph/read', true, counts).reply_markup,
+    markup,
+  );
+  assert.deepEqual(
+    renderTelegramDelivery(draft, 'https://telegra.ph/read', true, counts).payload.reply_markup,
+    markup,
+  );
+  assert.equal(
+    'reply_markup' in renderTelegramMessage(draft, 'https://telegra.ph/read', false, counts),
+    false,
   );
 });
 
@@ -90,7 +116,7 @@ test('renders separate article and discussion sections with direct comment refer
   assert.match(message.text, /&amp; &lt;标题&gt;/);
   assert.match(message.text, /（★ 200 分）/);
   assert.match(message.text, />💬 HN 讨论 · 10 条<\/a>/);
-  assert.match(message.text, /<\/a>\n⏱️ 阅读时间：约 3 分钟/);
+  assert.match(message.text, /<\/blockquote>\n\n⏱️ 阅读时间：约 3 分钟/);
   assert.doesNotMatch(message.text, /HN 200 分/);
   assert.doesNotMatch(message.text, /10 评论/);
   assert.doesNotMatch(message.text, /15 秒版|看点|解决具体问题|适合你|可以跳过/);
@@ -307,7 +333,7 @@ test('renders a bold source headline with inline score and keeps tags on the fin
   assert.match(message.text, /<\/b> （★ 450 分 🔥）\n\n<blockquote expandable>/);
   assert.equal(
     message.text.split('</blockquote>')[1],
-    '\n\n🔗 原文：<a href="https://example.com/article">https://example.com/article</a>\n⏱️ 阅读时间：约 3 分钟\n<a href="https://news.ycombinator.com/item?id=123">💬 HN 讨论 · 10 条</a>\n\n#AI #编程语言',
+    '\n\n⏱️ 阅读时间：约 3 分钟\n<a href="https://news.ycombinator.com/item?id=123">💬 HN 讨论 · 10 条</a>\n\n#AI #编程语言',
   );
   assert.doesNotMatch(message.text, /telegra\.ph|中文全文|中文阅读/);
   assert.deepEqual(message.link_preview_options, {

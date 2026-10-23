@@ -10,7 +10,7 @@ import type { ReadingStore } from './store.js';
 
 export interface ChannelFeedbackOptions {
   chatId: string;
-  publications: Pick<PublicationRepository, 'getPublication'>;
+  publications: Pick<PublicationRepository, 'getPublication' | 'listPublications'>;
   previewChatId?: string;
 }
 
@@ -38,7 +38,10 @@ export function bindChannelFeedbackPreview(
   if (publication.state !== 'published' || !publication.page) {
     throw new PublicationConflictError('Preview feedback requires a published story');
   }
-  store.put(`channel-preview:${options.previewChatId}:${messageId}`, { storyId });
+  store.transaction(() => {
+    store.put(`channel-preview:${options.previewChatId}:${messageId}`, { storyId });
+    store.markFeedbackCounts(storyId);
+  });
 }
 
 const receiptSchema = z.object({

@@ -4,6 +4,7 @@ import type { DigestService } from './application/digest-service.js';
 import { errorCode, errorStatus } from './errors.js';
 import type { Logger } from './logger.js';
 import { renderTelegramMessage, renderTelegraphPage } from './presentation.js';
+import type { FeedbackCounts } from './recommendations/store.js';
 
 interface AdminServerOptions {
   adminToken: string;
@@ -13,6 +14,7 @@ interface AdminServerOptions {
   stopping?: () => boolean;
   readingStatus?: () => unknown;
   channelFeedbackEnabled?: boolean;
+  channelFeedbackCounts?: (storyId: number) => FeedbackCounts;
   bindChannelPreview?: (storyId: number, messageId: number) => void;
   sendReadingPreview?: () => Promise<void>;
 }
@@ -74,6 +76,7 @@ export function createAdminServer(options: AdminServerOptions): Server {
         startedAt,
         options.logger,
         options.channelFeedbackEnabled === true,
+        options.channelFeedbackCounts,
       );
     } catch (error) {
       const code = errorCode(error);
@@ -91,6 +94,7 @@ async function routeAdminRequest(
   startedAt: string,
   logger: Logger,
   channelFeedbackEnabled: boolean,
+  channelFeedbackCounts: ((storyId: number) => FeedbackCounts) | undefined,
 ): Promise<void> {
   if (url.pathname === '/admin/status' && request.method === 'GET') {
     respondJson(response, 200, {
@@ -167,7 +171,12 @@ async function routeAdminRequest(
     respondJson(response, 200, {
       draft,
       content: renderTelegraphPage(draft),
-      message: renderTelegramMessage(draft, 'https://telegra.ph/preview', channelFeedbackEnabled),
+      message: renderTelegramMessage(
+        draft,
+        'https://telegra.ph/preview',
+        channelFeedbackEnabled,
+        channelFeedbackCounts?.(id),
+      ),
     });
     return;
   }

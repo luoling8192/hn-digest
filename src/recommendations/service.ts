@@ -4,6 +4,7 @@ import { escapeHtml } from '../presentation.js';
 import { ReadingAccess } from './access.js';
 import type { ReadingAssistant } from './assistant.js';
 import { ChannelFeedback, type ChannelFeedbackOptions } from './channel-feedback.js';
+import { ChannelFeedbackSync } from './channel-feedback-sync.js';
 import type { DeepReader } from './deep-reading.js';
 import { ReadingLimits } from './limits.js';
 import {
@@ -58,6 +59,7 @@ export class ReadingService {
   private readonly limits: ReadingLimits;
   private lastPublicCatalogRefreshAt: number | null = null;
   private readonly channelFeedback: ChannelFeedback | undefined;
+  private readonly feedbackSync: ChannelFeedbackSync | undefined;
   constructor(
     readonly ownerId: number,
     private readonly store: ReadingStore,
@@ -74,6 +76,13 @@ export class ReadingService {
     this.channelFeedback = channelFeedback
       ? new ChannelFeedback(channelFeedback, store, transport, now)
       : undefined;
+    this.feedbackSync = channelFeedback
+      ? new ChannelFeedbackSync(channelFeedback, store, transport, now)
+      : undefined;
+  }
+
+  async syncFeedback(signal?: AbortSignal): Promise<void> {
+    await this.feedbackSync?.sync(signal);
   }
 
   accepts(update: ReadingUpdate): boolean {

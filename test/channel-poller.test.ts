@@ -42,6 +42,7 @@ function harness(
   handle: (update: ReadingUpdate, store: ReadingStore) => Promise<void>,
   logger: Logger = silentLogger,
   reportFailure: (update: ReadingUpdate) => Promise<void> = async () => {},
+  syncFeedback: (signal?: AbortSignal) => Promise<void> = async () => {},
 ) {
   const directory = mkdtempSync(join(process.cwd(), 'channel-poller-test-'));
   const store = new ReadingStore(directory);
@@ -69,6 +70,7 @@ function harness(
     isImmediate: (candidate: ReadingUpdate) => candidate.callback_query !== undefined,
     handle: (candidate: ReadingUpdate) => handle(candidate, store),
     reportFailure,
+    syncFeedback,
   };
   return {
     store,
@@ -85,6 +87,84 @@ function harness(
 }
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test('slow count synchronization leaves callbacks responsive and shutdown cancels and drains it', async () => {
+  const pendingSync = deferred();
+  const handled: number[] = [];
+  const syncSignals: AbortSignal[] = [];
+  const h = harness(
+    [[update(1, true)], [update(2, true)]],
+    async (item) => {
+      handled.push(item.update_id);
+    },
+    silentLogger,
+    async () => {
+      throw new Error('Successful callbacks must not report failure');
+    },
+    async (signal) => {
+      assert.ok(signal);
+      syncSignals.push(signal);
+      await pendingSync.promise;
+    },
+  );
+  try {
+    h.poller.start();
+    await turn();
+    assert.deepEqual(handled, [1, 2]);
+    assert.equal(syncSignals.length, 1);
+    assert.equal(h.requests.length, 3);
+    let stopped = false;
+    const stopping = h.poller.stop().then(() => {
+      stopped = true;
+    });
+    await turn();
+    assert.equal(syncSignals[0]?.aborted, true);
+    assert.equal(stopped, false);
+    assert.deepEqual(h.store.feedbackCounts(1), { likes: 0, saves: 0 });
+    pendingSync.resolve();
+    await stopping;
+    assert.equal(stopped, true);
+  } finally {
+    pendingSync.resolve();
+    await h.poller.stop();
+    h.cleanup();
+  }
+});
+
+test('count synchronization failure is logged separately and later polling retries it', async () => {
+  const warnings: string[] = [];
+  const reported: number[] = [];
+  let syncCalls = 0;
+  const h = harness(
+    [[], []],
+    async () => {},
+    {
+      info: () => {},
+      error: () => {},
+      warn: (event) => {
+        warnings.push(event);
+      },
+    },
+    async (item) => {
+      reported.push(item.update_id);
+    },
+    async () => {
+      syncCalls++;
+      if (syncCalls === 1) throw new Error('Count edit unavailable');
+    },
+  );
+  try {
+    await h.poller.pollOnce();
+    assert.deepEqual(warnings, ['reading_feedback_sync_failed']);
+    assert.deepEqual(reported, []);
+    await h.poller.pollOnce();
+    assert.equal(syncCalls, 2);
+    assert.equal(h.requests.length, 2);
+  } finally {
+    await h.poller.stop();
+    h.cleanup();
+  }
+});
 
 test('later polling batches handle channel feedback while reading is blocked, without replaying claims', async () => {
   const reading = deferred();

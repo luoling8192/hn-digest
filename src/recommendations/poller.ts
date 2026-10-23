@@ -18,13 +18,14 @@ export class ReadingPoller {
   private lastPollAt: string | null = null;
   private normalTail: Promise<void> = Promise.resolve();
   private readonly pending = new Set<Promise<void>>();
+  private feedbackSync: Promise<void> | null = null;
 
   constructor(
     private readonly store: ReadingStore,
     private readonly transport: ReadingTransport,
     private readonly service: Pick<
       ReadingService,
-      'accepts' | 'isImmediate' | 'handle' | 'reportFailure'
+      'accepts' | 'isImmediate' | 'handle' | 'reportFailure' | 'syncFeedback'
     >,
     private readonly logger: Logger,
   ) {}
@@ -38,6 +39,7 @@ export class ReadingPoller {
     this.abort.abort();
     await this.running;
     await this.normalTail;
+    await this.feedbackSync;
   }
 
   status() {
@@ -51,9 +53,11 @@ export class ReadingPoller {
   async pollOnce(signal?: AbortSignal): Promise<void> {
     await this.poll(signal);
     await this.normalTail;
+    await this.feedbackSync;
   }
 
   private async poll(signal?: AbortSignal): Promise<void> {
+    this.synchronizeFeedback();
     // A saturated normal queue pauses fetching until one operation finishes.
     while (this.pending.size >= maxPendingReadingUpdates) {
       if (signal?.aborted) return;
@@ -118,6 +122,21 @@ export class ReadingPoller {
         });
       }
     }
+    this.synchronizeFeedback();
+  }
+
+  private synchronizeFeedback(): void {
+    if (this.feedbackSync || this.abort.signal.aborted) return;
+    this.feedbackSync = this.service.syncFeedback(this.abort.signal).then(
+      () => {
+        this.feedbackSync = null;
+      },
+      (error) => {
+        this.feedbackSync = null;
+        if (!this.abort.signal.aborted)
+          this.logger.warn('reading_feedback_sync_failed', { code: errorCode(error) });
+      },
+    );
   }
 
   private async run(): Promise<void> {
