@@ -224,7 +224,8 @@ test('public channel feedback isolates readers and never grants model or adminis
     assert.equal(h.store.reader(300)?.feedback[storyId]?.saved, true);
     assert.equal(h.store.article(storyId)?.summaryUrl, h.publication.page?.url);
     assert.equal(h.service.accepts(message('/saved', 300)), true);
-    assert.equal(h.service.accepts(message('/recommend', 300)), false);
+    assert.equal(h.service.accepts(message('/recommend', 300)), true);
+    assert.equal(h.service.accepts(message('解释这篇文章', 300)), false);
     await h.service.handle(message('/allow 200'));
     await h.service.handle(callback('owner-save'));
     await h.service.handle(callback('guest-like', 'like', 200));
@@ -244,7 +245,8 @@ test('public channel feedback isolates readers and never grants model or adminis
     await h.service.handle(message('/deny 200'));
     await h.service.handle(callback('revoked-save', 'save', 200));
     assert.equal(h.store.reader(200)?.feedback[storyId]?.saved, true);
-    assert.equal(h.service.accepts(message('/recommend', 200)), false);
+    assert.equal(h.service.accepts(message('/recommend', 200)), true);
+    assert.equal(h.service.accepts(message('解释这篇文章', 200)), false);
   } finally {
     h.cleanup();
   }
@@ -337,7 +339,8 @@ test('a reused callback ID cannot affect a different reader and model-access rev
     assert.equal(h.calls.at(-1)?.payload.show_alert, undefined);
     assert.match(String(h.calls.at(-1)?.payload.text), /已喜欢/);
     assert.deepEqual(h.store.reader(200), before);
-    assert.equal(h.service.accepts(message('/recommend', 200)), false);
+    assert.equal(h.service.accepts(message('/recommend', 200)), true);
+    assert.equal(h.service.accepts(message('解释这篇文章', 200)), false);
   } finally {
     h.cleanup();
   }

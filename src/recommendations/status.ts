@@ -1,7 +1,7 @@
 import type { DigestService } from '../application/digest-service.js';
 import { escapeHtml } from '../presentation.js';
 import type { ReadingBackfill } from './backfill.js';
-import { readingMessage, type ReadingMessage } from './presentation.js';
+import { type ReadingMessage, readingMessage } from './presentation.js';
 
 export type StatusView = 'overview' | 'failures';
 
@@ -76,7 +76,7 @@ export function operationsPanel(
       { text: '刷新状态', callback_data: 'ops:overview' },
       { text: '查看失败', callback_data: 'ops:failures' },
     ],
-    [{ text: '推荐用户管理', callback_data: 'ops:users' }],
+    [{ text: 'AI 功能授权', callback_data: 'ops:users' }],
   ]);
 }
 
