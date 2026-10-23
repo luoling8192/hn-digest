@@ -68,6 +68,7 @@ function harness(articleCount = 12) {
   let currentTime = Date.UTC(2026, 9, 23, 12);
   let sentId = 100;
   let failNextSend = false;
+  let failNextRefresh = false;
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const paid = { understand: 0, annotate: 0, explain: 0, prepare: 0, enqueue: 0 };
   let catalogCalls = 0;
@@ -93,6 +94,10 @@ function harness(articleCount = 12) {
       {
         refresh: async () => {
           catalogCalls++;
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw new Error('Catalog refresh failed');
+          }
         },
       },
       {
@@ -150,6 +155,9 @@ function harness(articleCount = 12) {
     rejectNextSend() {
       failNextSend = true;
     },
+    rejectNextRefresh() {
+      failNextRefresh = true;
+    },
     restart() {
       store.close();
       store = new ReadingStore(directory);
@@ -161,6 +169,26 @@ function harness(articleCount = 12) {
     },
   };
 }
+
+test('failed public catalog refreshes are throttled without consuming recommendation allowance', async () => {
+  const h = harness();
+  try {
+    h.rejectNextRefresh();
+    await assert.rejects(h.dispatch(message('/recommend')), /Catalog refresh failed/);
+    assert.equal(h.catalogCalls, 1);
+    await h.dispatch(message('/recommend'));
+    assert.equal(h.latest().articleIds.length, 5);
+    await h.dispatch(message('/recommend', userId + 1));
+    assert.equal(h.latest(userId + 1).articleIds.length, 5);
+    assert.equal(h.catalogCalls, 1);
+    h.advance(30_000);
+    await h.dispatch(message('/recommend'));
+    assert.equal(h.catalogCalls, 2);
+    assert.deepEqual(h.paid, { understand: 0, annotate: 0, explain: 0, prepare: 0, enqueue: 0 });
+  } finally {
+    h.cleanup();
+  }
+});
 
 test('revoked AI grants stop automatic deep-page delivery while public feedback stays available', async () => {
   const h = harness();

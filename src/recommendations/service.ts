@@ -598,6 +598,7 @@ export class ReadingService {
       this.lastPublicCatalogRefreshAt === null ||
       this.now() - this.lastPublicCatalogRefreshAt >= 30_000
     ) {
+      if (!aiEnabled) this.lastPublicCatalogRefreshAt = this.now();
       await this.catalog.refresh(reader);
       this.lastPublicCatalogRefreshAt = this.now();
     }

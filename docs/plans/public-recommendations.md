@@ -27,5 +27,5 @@ Shiguang readers can save channel articles and manage a private collection. Open
 ## Delivery plan
 
 - [x] Implement public recommendation routing, controls and persistent limits.
-- [x] Verify personal state, zero paid calls, grants/revocation, quotas and restart behavior (197 tests and local browser fixtures).
+- [x] Verify personal state, zero paid calls, grants/revocation, quotas and restart behavior (198 tests and local browser fixtures).
 - [ ] Prepare a reviewable release and verify the real Bot path after deployment authorization and deployment.
