@@ -157,6 +157,7 @@ test('public saved views refresh only their canonical page articles without cata
     {
       chatId: '-100123456789',
       publications: {
+        listPublications: () => publications.listPublications(),
         getPublication: (id) => {
           lookups.push(id);
           return publications.getPublication(id);

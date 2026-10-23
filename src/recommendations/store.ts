@@ -15,9 +15,26 @@ import {
 } from './model.js';
 
 const rowSchema = z.object({ data: z.string() });
+const identifierSchema = z.number().int().positive().safe();
+const feedbackCountsSchema = z.object({
+  likes: z.number().int().nonnegative(),
+  saves: z.number().int().nonnegative(),
+});
+const feedbackSyncSchema = z.object({
+  revision: identifierSchema,
+  pending: z.boolean(),
+  priority: z.enum(['feedback', 'backfill']),
+});
+const keyedRowSchema = rowSchema.extend({ key: z.string() });
+const previewBindingSchema = z.object({ storyId: identifierSchema });
+const previewKeySchema = z.string().regex(/^channel-preview:-?[1-9]\d*:[1-9]\d*$/);
+const chatIdSchema = z.string().refine((value) => Number.isSafeInteger(Number(value)));
+
+export type FeedbackCounts = z.infer<typeof feedbackCountsSchema>;
 
 export class ReadingStore {
   private readonly db: DatabaseSync;
+  private transactionDepth = 0;
 
   constructor(directory: string) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -47,16 +64,103 @@ export class ReadingStore {
     return this.get(`reader:${userId}`, readerSchema);
   }
   saveReader(reader: Reader): void {
-    const current = this.reader(reader.userId);
-    if (current) {
-      for (const [id, feedback] of Object.entries(current.feedback)) {
-        const proposed = reader.feedback[id];
-        if (!proposed || proposed.revision < feedback.revision) {
-          reader.feedback[id] = feedback;
+    this.transaction(() => {
+      const current = this.reader(reader.userId);
+      if (current) {
+        for (const [id, feedback] of Object.entries(current.feedback)) {
+          const proposed = reader.feedback[id];
+          if (!proposed || proposed.revision < feedback.revision) {
+            reader.feedback[id] = feedback;
+          }
         }
       }
-    }
-    this.put(`reader:${reader.userId}`, readerSchema.parse(reader));
+      const validated = readerSchema.parse(reader);
+      this.put(`reader:${reader.userId}`, validated);
+      for (const [id, feedback] of Object.entries(validated.feedback)) {
+        const before = current?.feedback[id];
+        if (
+          feedback.saved !== (before?.saved === true) ||
+          (feedback.opinion === 1) !== (before?.opinion === 1)
+        ) {
+          this.markFeedbackCounts(identifierSchema.parse(Number(id)));
+        }
+      }
+    });
+  }
+
+  feedbackCounts(storyId: number): FeedbackCounts {
+    identifierSchema.parse(storyId);
+    const path = `$.feedback."${storyId}"`;
+    return feedbackCountsSchema.parse(
+      this.db
+        .prepare(
+          `SELECT
+             COUNT(CASE WHEN json_extract(data, ?) = 1 THEN 1 END) AS likes,
+             COUNT(CASE WHEN json_type(data, ?) = 'true' THEN 1 END) AS saves
+           FROM reading_state WHERE key LIKE 'reader:%'`,
+        )
+        .get(`${path}.opinion`, `${path}.saved`),
+    );
+  }
+
+  markFeedbackCounts(storyId: number, priority: 'feedback' | 'backfill' = 'feedback'): void {
+    identifierSchema.parse(storyId);
+    this.transaction(() => {
+      const key = `feedback-count-sync:${storyId}`;
+      const previous = this.get(key, feedbackSyncSchema);
+      this.put(
+        key,
+        feedbackSyncSchema.parse({
+          revision: previous ? previous.revision + 1 : 1,
+          pending: true,
+          priority: previous?.pending && previous.priority === 'feedback' ? 'feedback' : priority,
+        }),
+      );
+    });
+  }
+
+  pendingFeedbackCounts(): Array<{ storyId: number; revision: number }> {
+    return this.db
+      .prepare(
+        `SELECT key,data FROM reading_state WHERE key LIKE 'feedback-count-sync:%'
+         ORDER BY CASE json_extract(data,'$.priority') WHEN 'feedback' THEN 0 ELSE 1 END, key`,
+      )
+      .all()
+      .flatMap((raw) => {
+        const row = keyedRowSchema.parse(raw);
+        const state = feedbackSyncSchema.parse(JSON.parse(row.data));
+        const storyId = identifierSchema.parse(
+          Number(row.key.slice('feedback-count-sync:'.length)),
+        );
+        return state.pending ? [{ storyId, revision: state.revision }] : [];
+      });
+  }
+
+  ackFeedbackCounts(storyId: number, revision: number): void {
+    identifierSchema.parse(storyId);
+    identifierSchema.parse(revision);
+    this.transaction(() => {
+      const key = `feedback-count-sync:${storyId}`;
+      const current = this.get(key, feedbackSyncSchema);
+      if (current?.revision === revision) this.put(key, { ...current, pending: false });
+    });
+  }
+
+  channelPreviewBindings(): Array<{ chatId: string; messageId: number; storyId: number }> {
+    return this.db
+      .prepare("SELECT key,data FROM reading_state WHERE key LIKE 'channel-preview:%' ORDER BY key")
+      .all()
+      .map((raw) => {
+        const row = keyedRowSchema.parse(raw);
+        const key = previewKeySchema.parse(row.key);
+        const [, chatId, messageId] = key.split(':');
+        const binding = previewBindingSchema.parse(JSON.parse(row.data));
+        return {
+          chatId: chatIdSchema.parse(chatId),
+          messageId: identifierSchema.parse(Number(messageId)),
+          storyId: binding.storyId,
+        };
+      });
   }
   batch(id: string): Batch | null {
     return this.get(`batch:${id}`, batchSchema);
@@ -126,13 +230,21 @@ export class ReadingStore {
   }
 
   transaction(run: () => void): void {
-    this.db.exec('BEGIN IMMEDIATE');
+    const nested = this.transactionDepth > 0;
+    const savepoint = `reading_transaction_${this.transactionDepth}`;
+    this.db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE');
+    this.transactionDepth += 1;
     try {
       run();
-      this.db.exec('COMMIT');
+      this.db.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT');
     } catch (error) {
-      this.db.exec('ROLLBACK');
+      if (nested) {
+        this.db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        this.db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+      } else this.db.exec('ROLLBACK');
       throw error;
+    } finally {
+      this.transactionDepth -= 1;
     }
   }
 

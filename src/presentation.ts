@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { hackerNewsUrl } from './adapters/hacker-news.js';
 import type { Draft, TelegraphNode } from './domain.js';
 import { isReusableTag, isScanCardSummary } from './domain.js';
+import type { FeedbackCounts } from './recommendations/store.js';
 
 export interface TelegramMessagePayload {
   text: string;
@@ -238,10 +239,25 @@ function telegramVisibleTextLength(text: string): number {
     .replace(/&amp;/g, '&').length;
 }
 
+export function channelFeedbackMarkup(
+  storyId: number,
+  counts: FeedbackCounts,
+): NonNullable<TelegramMessagePayload['reply_markup']> {
+  return {
+    inline_keyboard: [
+      [
+        { text: `♡ 喜欢 ${counts.likes}`, callback_data: `d:like:${storyId}` },
+        { text: `☆ 收藏 ${counts.saves}`, callback_data: `d:save:${storyId}` },
+      ],
+    ],
+  };
+}
+
 export function renderTelegramMessage(
   draft: Draft,
   pageUrl: string,
   feedbackEnabled = false,
+  counts: FeedbackCounts = { likes: 0, saves: 0 },
 ): TelegramMessagePayload {
   const score = draft.story.score ?? 0;
   const title = `<b><a href="${escapeHtml(originalUrl(draft))}">${escapeHtml(draft.summary.title)}</a></b> （★ ${score} 分${score >= 400 ? ' 🔥' : ''}）`;
@@ -257,10 +273,9 @@ export function renderTelegramMessage(
   const readingTime =
     draft.article.readingMinutes === null
       ? ''
-      : `\n⏱️ 阅读时间：约 ${draft.article.readingMinutes} 分钟`;
-  const sourceUrl = originalUrl(draft);
-  const source = `🔗 原文：<a href="${escapeHtml(sourceUrl)}">${escapeHtml(sourceUrl)}</a>`;
-  const text = `${title}\n\n${telegramSummary(draft)}\n\n${source}${readingTime}\n${discussion}${tagFooter}`;
+      : `⏱️ 阅读时间：约 ${draft.article.readingMinutes} 分钟`;
+  const metadata = readingTime ? `${readingTime}\n${discussion}` : discussion;
+  const text = `${title}\n\n${telegramSummary(draft)}\n\n${metadata}${tagFooter}`;
 
   if (telegramVisibleTextLength(text) > 4_096)
     throw new Error('Telegram message exceeds 4096 characters');
@@ -274,18 +289,7 @@ export function renderTelegramMessage(
       prefer_large_media: true,
       show_above_text: false,
     },
-    ...(feedbackEnabled
-      ? {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '♡ 喜欢', callback_data: `d:like:${draft.story.id}` },
-                { text: '☆ 收藏', callback_data: `d:save:${draft.story.id}` },
-              ],
-            ],
-          },
-        }
-      : {}),
+    ...(feedbackEnabled ? { reply_markup: channelFeedbackMarkup(draft.story.id, counts) } : {}),
   };
 }
 
@@ -293,10 +297,11 @@ export function renderTelegramDelivery(
   draft: Draft,
   pageUrl: string,
   feedbackEnabled = false,
+  counts: FeedbackCounts = { likes: 0, saves: 0 },
 ): TelegramDelivery {
   return {
     kind: 'text',
-    payload: renderTelegramMessage(draft, pageUrl, feedbackEnabled),
+    payload: renderTelegramMessage(draft, pageUrl, feedbackEnabled, counts),
   };
 }
 

@@ -6,6 +6,7 @@ import { TelegraphClient } from './adapters/telegraph.js';
 import { createAdminServer } from './admin-server.js';
 import { type DigestDependencies, DigestService } from './application/digest-service.js';
 import { DigestScheduler } from './application/scheduler.js';
+import { drainPublishing } from './application/shutdown.js';
 import { readConfig } from './config.js';
 import { FetchJsonHttpClient } from './http-client.js';
 import { jsonLogger } from './logger.js';
@@ -30,7 +31,12 @@ const hackerNews = new HackerNewsClient(http);
 const articleExtractor = new ArticleExtractor(jsonLogger, config.FIRECRAWL_API_KEY);
 const summarizer = new OpenRouterSummarizer(config, http, jsonLogger);
 const telegraph = new TelegraphClient(config, http);
-const telegram = new TelegramClient(config);
+const readingStore = config.TELEGRAM_OWNER_ID ? new ReadingStore(config.DATA_DIR) : null;
+const telegram = new TelegramClient(
+  config,
+  fetch,
+  readingStore ? (storyId) => readingStore.feedbackCounts(storyId) : undefined,
+);
 
 const dependencies: DigestDependencies = {
   getTopStories: () => hackerNews.getTopStories(),
@@ -46,7 +52,6 @@ const dependencies: DigestDependencies = {
 
 const service = new DigestService(config, repository, dependencies, jsonLogger);
 const scheduler = new DigestScheduler(service, config.POLL_INTERVAL_SECONDS * 1_000, jsonLogger);
-const readingStore = config.TELEGRAM_OWNER_ID ? new ReadingStore(config.DATA_DIR) : null;
 const readingAssistant = new OpenRouterReadingAssistant(config, http);
 const readingCatalog = readingStore ? new ReadingCatalog(readingStore, repository) : null;
 const deepReading = readingStore
@@ -102,6 +107,9 @@ const server = createAdminServer({
     access: readingService?.accessStatus() ?? null,
   }),
   channelFeedbackEnabled: readingService !== null,
+  ...(readingStore
+    ? { channelFeedbackCounts: (storyId: number) => readingStore.feedbackCounts(storyId) }
+    : {}),
   ...(readingStore && config.TELEGRAM_PREVIEW_CHAT_ID
     ? {
         bindChannelPreview: (storyId: number, messageId: number) =>
@@ -134,13 +142,10 @@ async function shutdown(signal: string): Promise<void> {
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await Promise.all([readingPoller?.stop(), readingBackfill?.stop(), deepReading?.stop()]);
-  readingStore?.close();
-  const deadline = Date.now() + 170_000;
-  while (service.isRunning && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  const drained = !service.isRunning;
-  if (drained) repository.close();
+  const drained = await drainPublishing(
+    service,
+    () => readingStore?.close(),
+    () => repository.close(),
+  );
   jsonLogger.info('shutdown_finished', { drained });
 }
