@@ -34,22 +34,22 @@ export class ReadingAccess {
     const bounded = Math.min(page, Math.max(0, Math.ceil(grants.length / 8) - 1));
     const selected = grants.slice(bounded * 8, bounded * 8 + 8);
     const text = [
-      '<b>推荐用户管理</b>',
+      '<b>AI 功能授权</b>',
       `管理员：仅你本人 · 第 ${bounded + 1} 页`,
       '',
       ...selected.map((g) => `${g.userId} · ${g.enabled ? '已开启' : '已停用'}`),
-      ...(grants.length ? [] : ['尚未添加其他用户。']),
+      ...(grants.length ? [] : ['尚未添加其他 AI 用户。']),
       '',
-      '添加后，请对方先私聊 Bot 发送 /start。对方可发送 /id 查看自己的 UID。',
-      '喜欢和收藏向所有读者开放。开通仅授予 AI 推荐、深入阅读和偏好功能；管理面板仍仅你可用。授权用户共用现有模型账户额度。',
+      '开通 AI 功能后，请对方私聊 Bot 发送 /start。对方可发送 /id 查看自己的 UID。',
+      '推荐、喜欢和收藏向所有读者开放。授权仅授予 AI 问答、深入阅读与自然语言偏好调整；管理面板仍仅你可用。授权用户共用现有模型账户额度。',
     ].join('\n');
     const buttons: ReadingButton[][] = selected.map((g) => [
       {
-        text: `${g.enabled ? '停用' : '开启'} ${g.userId}`,
+        text: `${g.enabled ? '停用 AI' : '开通 AI'} ${g.userId}`,
         callback_data: `ops:${g.enabled ? 'revoke' : 'grant'}:${g.userId}`,
       },
     ]);
-    buttons.push([{ text: '添加 UID', callback_data: 'ops:add' }]);
+    buttons.push([{ text: '添加 AI 用户 UID', callback_data: 'ops:add' }]);
     const navigation: ReadingButton[] = [];
     if (bounded > 0) navigation.push({ text: '上一页', callback_data: `ops:users:${bounded - 1}` });
     if ((bounded + 1) * 8 < grants.length)
@@ -76,7 +76,7 @@ export class ReadingAccess {
     if (data === 'ops:add') {
       this.store.put('access:awaiting_uid', true);
       panel = readingMessage(
-        '请发送对方的数字 Telegram UID，或使用 /allow UID 开通。\n对方可以先私聊 Bot 发送 /id 获取。',
+        '请发送对方的数字 Telegram UID，或使用 /allow UID 开通 AI 功能。\n对方可以先私聊 Bot 发送 /id 获取。',
         [[{ text: '取消', callback_data: 'ops:cancel' }]],
       );
     } else if (text === '/cancel' || data === 'ops:cancel') {
@@ -96,7 +96,7 @@ export class ReadingAccess {
           panel = this.panel();
         }
       } else if (/^\/(allow|deny)(?:\s|$)/.test(text)) {
-        panel = readingMessage('格式：/allow 数字UID 开通，/deny 数字UID 停用。');
+        panel = readingMessage('格式：/allow 数字UID 开通 AI 功能，/deny 数字UID 停用 AI 功能。');
       } else {
         panel = this.panel(Number(data.match(/^ops:users:(\d+)$/)?.[1] ?? 0));
       }

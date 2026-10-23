@@ -296,7 +296,8 @@ test('owner grants persist and guest reading stays isolated from owner data and 
       await h.service.handle(update);
     }
     assert.equal(h.calls.length, before);
-    assert.equal(h.service.accepts(message('推荐', 300)), false);
+    assert.equal(h.service.accepts(message('推荐', 300)), true);
+    assert.equal(h.service.accepts(message('解释这篇文章', 300)), false);
     await h.service.reportFailure(message('推荐', 200));
     assert.equal(h.calls.at(-1)?.payload.chat_id, 200);
     await h.service.handle(message('/deny 200'));
@@ -304,8 +305,9 @@ test('owner grants persist and guest reading stays isolated from owner data and 
     await h.service.handle(message('推荐', 200));
     await h.service.handle(callback(guestBatch.id, guestBatch.messageId, 'save', 200));
     await h.service.reportFailure(message('推荐', 200));
-    assert.equal(h.calls.length, after);
-    assert.equal(h.store.reader(200)?.latestBatch, guest.latestBatch);
+    assert.equal(h.calls.length, after + 3);
+    assert.notEqual(h.store.reader(200)?.latestBatch, guest.latestBatch);
+    assert.equal(h.service.accepts(message('解释这篇文章', 200)), false);
     await h.service.handle(message('/allow 200'));
     assert.equal(h.service.accepts(message('推荐', 200)), true);
     await h.service.handle(message('/deny 100'));
@@ -336,7 +338,8 @@ test('panel UID prompt validates input and unauthorized users can only discover 
     assert.ok(disable.callback_query);
     disable.callback_query.data = 'ops:revoke:200';
     await h.service.handle(disable);
-    assert.equal(h.service.accepts(message('推荐', 200)), false);
+    assert.equal(h.service.accepts(message('推荐', 200)), true);
+    assert.equal(h.service.accepts(message('解释这篇文章', 200)), false);
     assert.match(String(h.calls.at(-1)?.payload.text), /200 · 已停用/);
   } finally {
     h.cleanup();
@@ -410,7 +413,7 @@ test('private reader binds trusted numeric identity; foreign users and groups ca
     if (group.message) group.message.chat = { id: -100, type: 'supergroup' };
     await h.service.handle(group);
     assert.equal(h.calls.length, 1);
-    assert.match(String(h.calls[0]?.payload.text), /喜欢和收藏向所有读者开放/);
+    assert.match(String(h.calls[0]?.payload.text), /推荐和收藏向所有读者开放/);
     assert.equal(h.store.reader(owner), null);
     await h.service.handle(message('/start'));
     const { batch, messageId } = h.latest();

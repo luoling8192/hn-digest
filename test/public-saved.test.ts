@@ -238,6 +238,7 @@ test('public saved lists support pagination, removal and undo without AI calls o
       'select',
       'select',
       'next',
+      'more',
     ]);
     await h.service.handle(callback(batch, 'next'));
     batch = h.latest();
@@ -249,8 +250,11 @@ test('public saved lists support pagination, removal and undo without AI calls o
     assert.deepEqual(actions(h.calls.at(-1)?.payload ?? {}), [
       'select',
       'select',
-      'unsave',
+      'save',
+      'like',
+      'less',
       'clear',
+      'unsave',
     ]);
     await h.service.handle(callback(batch, 'unsave'));
     assert.equal(h.store.reader(userId)?.feedback[2]?.saved, false);
@@ -273,19 +277,11 @@ test('public access rejects model/admin actions, foreign batches and private ide
     await h.service.handle(message('/saved'));
     const batch = h.latest();
     const before = h.calls.length;
-    for (const text of [
-      '推荐',
-      '/recommend',
-      '/preferences',
-      '我喜欢数据库',
-      '/users',
-      '/status',
-      '/allow 200',
-    ]) {
+    for (const text of ['/preferences', '我喜欢数据库', '/users', '/status', '/allow 200']) {
       assert.equal(h.service.accepts(message(text)), false, text);
       await h.service.handle(message(text));
     }
-    for (const action of ['more', 'like', 'less', 'explain', 'preferences', 'save']) {
+    for (const action of ['explain', 'preferences']) {
       const update = callback(batch, action);
       assert.equal(h.service.accepts(update), false, action);
       await h.service.handle(update);
@@ -313,7 +309,7 @@ test('public access rejects model/admin actions, foreign batches and private ide
   }
 });
 
-test('revoking AI access preserves public saves but rejects callbacks on old recommendation batches', async () => {
+test('revoking AI access preserves public recommendations and feedback while rejecting AI actions', async () => {
   const h = harness(2);
   try {
     h.store.put('access:grants', [{ userId, enabled: true }]);
@@ -324,7 +320,7 @@ test('revoking AI access preserves public saves but rejects callbacks on old rec
     await h.service.handle(callback(batch, 'select:1'));
     await h.service.handle(callback(batch, 'unsave'));
     assert.equal(h.store.reader(userId)?.feedback[2]?.saved, false);
-    assert.equal(actions(h.calls.at(-1)?.payload ?? {}).includes('more'), false);
+    assert.equal(actions(h.calls.at(-1)?.payload ?? {}).includes('more'), true);
     await h.service.handle(callback(batch, 'undo'));
     assert.equal(h.store.reader(userId)?.feedback[2]?.saved, true);
     const oldRecommendations = { ...batch, id: 'abc123abc123', kind: 'recommendations' as const };
@@ -332,7 +328,9 @@ test('revoking AI access preserves public saves but rejects callbacks on old rec
     const before = h.calls.length;
     await h.service.handle(callback(oldRecommendations, 'select:1'));
     await h.service.handle(callback(oldRecommendations, 'save'));
-    assert.equal(h.calls.length, before);
+    assert.equal(h.calls.length, before + 4);
+    await h.service.handle(callback(oldRecommendations, 'explain'));
+    assert.equal(h.calls.length, before + 4);
     await h.service.handle(message('/saved'));
     assert.deepEqual(h.latest().articleIds, [2, 1]);
   } finally {
@@ -487,7 +485,7 @@ test('public saved failures receive deterministic recovery without opening restr
     await h.service.reportFailure(callback(batch, 'explain'));
     await h.service.reportFailure(callback(batch, 'next', 300));
     await h.service.reportFailure(message('/start'));
-    assert.equal(h.calls.length, count);
+    assert.equal(h.calls.length, count + 1);
   } finally {
     h.cleanup();
   }
