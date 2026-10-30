@@ -50,7 +50,7 @@ Private recommendations, account binding, historical article backfill, and inven
 
 In the owner's private chat, send `/status` or `运行状态` for publishing progress, archive counts, recent publications, and current failures. Inline buttons refresh the same panel. This read-only view does not invoke the model or trigger publishing.
 
-`GET /healthz` is public and returns only process health. Every `/admin/*` route requires `Authorization: Bearer <ADMIN_TOKEN>`. Avoid putting this token in URLs.
+`GET /healthz` is public and returns only process health. The public, read-only reader API under `/api/v1` is described in [the reader API contract](reader-api.md). Every `/admin/*` route requires `Authorization: Bearer <ADMIN_TOKEN>`. Avoid putting this token in URLs.
 
 | Method | Route | Behavior |
 | --- | --- | --- |
