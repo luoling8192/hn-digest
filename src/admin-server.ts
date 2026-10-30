@@ -4,6 +4,7 @@ import type { DigestService } from './application/digest-service.js';
 import { errorCode, errorStatus } from './errors.js';
 import type { Logger } from './logger.js';
 import { renderTelegramMessage, renderTelegraphPage } from './presentation.js';
+import type { ReaderApi } from './reader-api/router.js';
 import type { FeedbackCounts } from './recommendations/store.js';
 
 interface AdminServerOptions {
@@ -17,6 +18,7 @@ interface AdminServerOptions {
   channelFeedbackCounts?: (storyId: number) => FeedbackCounts;
   bindChannelPreview?: (storyId: number, messageId: number) => void;
   sendReadingPreview?: () => Promise<void>;
+  readerApi?: ReaderApi;
 }
 
 export function createAdminServer(options: AdminServerOptions): Server {
@@ -29,6 +31,8 @@ export function createAdminServer(options: AdminServerOptions): Server {
       respondJson(response, stopping ? 503 : 200, { status: stopping ? 'stopping' : 'ok' });
       return;
     }
+
+    if (options.readerApi && (await options.readerApi.handle(request, response, url))) return;
 
     if (!authorized(request, options.adminToken)) {
       respondJson(response, 401, { error: 'Unauthorized' });

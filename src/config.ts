@@ -11,6 +11,11 @@ export const configSchema = z.object({
     .refine((value) => Number.isSafeInteger(Number(value)))
     .optional(),
   TELEGRAM_OWNER_ID: z.coerce.number().int().positive().safe().optional(),
+  TELEGRAM_BOT_USERNAME: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z][A-Za-z0-9_]{4,31}$/)
+    .optional(),
   READING_ARCHIVE_TARGET: positiveInteger(300),
   OPENROUTER_API_KEY: z.string().min(20),
   FIRECRAWL_API_KEY: z.string().trim().min(1),

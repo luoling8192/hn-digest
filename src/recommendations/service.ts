@@ -6,6 +6,7 @@ import type { ReadingAssistant } from './assistant.js';
 import { ChannelFeedback, type ChannelFeedbackOptions } from './channel-feedback.js';
 import { ChannelFeedbackSync } from './channel-feedback-sync.js';
 import type { DeepReader } from './deep-reading.js';
+import type { LinkStore } from '../reader-api/links.js';
 import { ReadingLimits } from './limits.js';
 import {
   type Batch,
@@ -70,6 +71,7 @@ export class ReadingService {
     private readonly deepReader?: DeepReader,
     private readonly statusPanel?: (view: StatusView) => ReadingMessage,
     channelFeedback?: ChannelFeedbackOptions,
+    private readonly appLinks?: Pick<LinkStore, 'claim'>,
   ) {
     this.access = new ReadingAccess(ownerId, store, transport);
     this.limits = new ReadingLimits(store, now);
@@ -140,6 +142,17 @@ export class ReadingService {
       await this.transport.call('sendMessage', {
         chat_id: userId,
         text: `你的 Telegram UID：${userId}`,
+      });
+      return;
+    }
+    const linkCode = text?.match(/^\/start(?:@\w+)?\s+link_([A-Za-z0-9_-]{22})$/)?.[1];
+    if (linkCode && this.appLinks) {
+      const claimed = this.appLinks.claim(linkCode, userId);
+      await this.transport.call('sendMessage', {
+        chat_id: userId,
+        text: claimed
+          ? '已连接 Shiguang App'
+          : '连接码无效或已过期，请回到 Shiguang App 重新获取。',
       });
       return;
     }
