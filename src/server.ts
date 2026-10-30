@@ -22,6 +22,9 @@ import { ReadingPoller } from './recommendations/poller.js';
 import { ReadingService } from './recommendations/service.js';
 import { operationsPanel } from './recommendations/status.js';
 import { ReadingStore } from './recommendations/store.js';
+import { ArticleIndex } from './reader-api/articles.js';
+import { LinkStore } from './reader-api/links.js';
+import { ReaderApi } from './reader-api/router.js';
 import { SqlitePublicationRepository } from './storage/sqlite-publication-repository.js';
 
 const config = readConfig();
@@ -62,6 +65,7 @@ const channelFeedback: ChannelFeedbackOptions = {
   publications: repository,
   ...(config.TELEGRAM_PREVIEW_CHAT_ID ? { previewChatId: config.TELEGRAM_PREVIEW_CHAT_ID } : {}),
 };
+const linkStore = readingStore ? new LinkStore(readingStore) : null;
 const readingService =
   config.TELEGRAM_OWNER_ID && readingStore && readingCatalog
     ? new ReadingService(
@@ -74,6 +78,7 @@ const readingService =
         deepReading,
         (view) => operationsPanel(service, readingBackfill, view),
         channelFeedback,
+        config.TELEGRAM_BOT_USERNAME && linkStore ? linkStore : undefined,
       )
     : null;
 const readingPoller =
@@ -105,6 +110,13 @@ const server = createAdminServer({
       : false,
     inventory: readingBackfill?.status() ?? null,
     access: readingService?.accessStatus() ?? null,
+  }),
+  readerApi: new ReaderApi({
+    articles: new ArticleIndex(repository),
+    store: readingStore,
+    links: config.TELEGRAM_BOT_USERNAME ? linkStore : null,
+    botUsername: config.TELEGRAM_BOT_USERNAME,
+    logger: jsonLogger,
   }),
   channelFeedbackEnabled: readingService !== null,
   ...(readingStore

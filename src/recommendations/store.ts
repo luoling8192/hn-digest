@@ -60,6 +60,19 @@ export class ReadingStore {
       .run(key, JSON.stringify(value));
   }
 
+  delete(key: string): void {
+    this.db.prepare('DELETE FROM reading_state WHERE key=?').run(key);
+  }
+
+  /** Removes keys under `prefix` whose JSON `expiresAt` is at or before `now`. */
+  deleteExpired(prefix: string, now: number): void {
+    this.db
+      .prepare(
+        "DELETE FROM reading_state WHERE substr(key,1,?)=? AND json_extract(data,'$.expiresAt') <= ?",
+      )
+      .run(prefix.length, prefix, now);
+  }
+
   reader(userId: number): Reader | null {
     return this.get(`reader:${userId}`, readerSchema);
   }
